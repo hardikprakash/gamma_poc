@@ -1,0 +1,4 @@
+# PDF Processing
+PyMuPDF
+pdfplumber
+
