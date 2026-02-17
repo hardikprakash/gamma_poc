@@ -44,17 +44,6 @@ and return ONLY valid JSON — no markdown, no explanation, no code fences.
 - If you are unsure about an entity or relationship, omit it rather than guessing.
 """
 
-USER_PROMPT_TEMPLATE = """Document: {document_id}
-Previously seen entity IDs (do NOT re-create these, reuse them in relationships):
-{known_entity_ids}
-
---- PAGES {page_range} ---
-{page_content}
---- END ---
-
-Extract all entities and relationships from the pages above.
-Return ONLY the JSON object described in the system prompt."""
-
 entity_relation_extraction_user_prompt_template =  """Document: {document_id}
 Previously seen entity IDs (do NOT re-create these, reuse them in relationships):
 {known_entity_ids}

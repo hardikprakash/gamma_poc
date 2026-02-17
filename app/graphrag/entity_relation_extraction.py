@@ -6,6 +6,7 @@ from typing import Optional
 from app.core.openrouter import client
 from app.core.prompts import entity_relation_extraction_system_prompt as SYSTEM_PROMPT, entity_relation_extraction_user_prompt_template as USER_PROMPT_TEMPLATE
 from app.domain.ontology import ENTITY_TYPES, RELATIONSHIP_TYPES
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -48,29 +49,24 @@ class ExtractionResult:
 
 
 class EntityRelationExtractor:
-    def __init__(
-        self,
-        parsed_json_path: str = r"./output/parsing/parsed_output.json",
-        window_size: int = 3,
-        step_size: int = 2,
-        model: str = "openai/gpt-4o-2024-11-20",
-    ):
+    def __init__(self, parsed_json_path: str, window_size: int = 3, step_size: int = 2):
         """
         Args:
             parsed_json_path:    Path to the parsed JSON produced by the ingestion module.
             window_size: Number of pages per LLM call.
             step_size:   Slide increment. window_size=3, step_size=2 gives
                          [0-2], [2-4], [4-6] ... (1-page overlap between windows).
-            model:       OpenRouter model string.
         """
-        with open(parsed_json_path, "r", encoding="utf-8") as f:
-            self.document_json = json.load(f)
-
-        self.document_id: str = self.document_json["document_id"]
-        self.pages: list[dict] = self.document_json.get("pages", [])
+        
         self.window_size = window_size
         self.step_size = step_size
-        self.model = model
+
+        with open(parsed_json_path, "r") as f:
+            self.document_json = json.load(f)
+
+        self.document_id: str = self.document_json["id"]
+        self.pages: list[dict] = self.document_json.get("pages", [])
+
 
     def process_document(self) -> ExtractionResult:
         """
@@ -89,10 +85,11 @@ class EntityRelationExtractor:
 
         for start, end in windows:
             window_pages = self.pages[start:end]
-            page_nums = [page["page_num"] for page in window_pages]
+            
+            page_nums = [page["page_number"] for page in window_pages]
             page_range = f"{page_nums[0]}-{page_nums[-1]}"
 
-            logger.info("  Window pages %s ...", page_range)
+            logger.info("Window pages %s ...", page_range)
 
             raw_response = self._call_llm(
                 window_pages,
@@ -138,12 +135,7 @@ class EntityRelationExtractor:
             start += self.step_size
         return windows
 
-    def _call_llm(
-        self,
-        pages: list[dict],
-        known_entity_ids: list[str],
-        page_range: str,
-    ) -> Optional[str]:
+    def _call_llm(self, pages: list[dict], known_entity_ids: list[str], page_range: str) -> Optional[str]:
         page_content = self._format_page_content(pages)
         user_message = USER_PROMPT_TEMPLATE.format(
             document_id=self.document_id,
@@ -153,7 +145,7 @@ class EntityRelationExtractor:
         )
         try:
             response = client.chat.completions.create(
-                model=self.model,
+                model=settings.MODEL_NAME, # type: ignore
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user",   "content": user_message},
@@ -166,10 +158,7 @@ class EntityRelationExtractor:
             logger.error("LLM call failed for pages %s: %s", page_range, exc)
             return None
 
-    def _parse_llm_response(
-        self,
-        raw: str,
-    ) -> tuple[list[Entity], list[Relationship], Optional[str]]:
+    def _parse_llm_response(self, raw: str) -> tuple[list[Entity], list[Relationship], Optional[str]]:
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -233,12 +222,20 @@ class EntityRelationExtractor:
 
     @staticmethod
     def _format_page_content(pages: list[dict]) -> str:
-        blocks = []
+        page_blocks = []
         for page in pages:
-            md = (page.get("markdown") or "").strip()
-            if md:
-                blocks.append(f"[Page {page['page_num']}]\n{md}")
-        return "\n\n".join(blocks) if blocks else "(no extractable text)"
+            # Concatenate all block contents from the page
+            block_contents = []
+            for block in page.get("blocks", []):
+                content = block.get("content", "").strip()
+                if content:
+                    block_contents.append(content)
+            
+            if block_contents:
+                page_text = "\n".join(block_contents)
+                page_blocks.append(f"[Page {page['page_number']}]\n{page_text}")
+        
+        return "\n\n".join(page_blocks) if page_blocks else "(no extractable text)"
 
     # ------------------------------------------------------------------
     # Context manager
