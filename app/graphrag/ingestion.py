@@ -1,6 +1,9 @@
+import pymupdf.layout
 import pymupdf4llm
-import fitz
+import logging
 from typing import List, Dict
+
+logger = logging.getLogger(__name__)
 
 
 class PDFIngestor:
@@ -8,56 +11,84 @@ class PDFIngestor:
     Simple PDF Ingestion Module using pymupdf4llm
     
     Extracts content as LLM-optimized markdown with proper table parsing.
+    Returns structured data with pages and blocks.
     """
     
-    def __init__(self, pdf_path: str, document_id: str = None) -> None:
+    def __init__(self, pdf_path: str, document_id: str, document_name: str, document_type: str = None) -> None:
         self.pdf_path = pdf_path
-        self.document_id = document_id or pdf_path.split('/')[-1].replace('.pdf', '')
-        self.doc = fitz.open(pdf_path)
-        self.parsed_pages = []
+        self.document_id = document_id
+        self.document_name = document_name
+        self.document_type = document_type
+        self.processed_page_chunks = []
     
-    def process_document(self) -> List[Dict]:
-        """Process entire document and return LLM-optimized markdown for each page"""
-        print(f"Processing document: {self.document_id}")
-        print(f"Total pages: {len(self.doc)}\n")
+    def process_page_chunk(self, page_chunk: Dict) -> Dict:
+        """Process a single page chunk and extract blocks"""
+        page_blocks = page_chunk["page_boxes"]
+        page = {"page_number": None, "blocks": []}
+
+        page_number = page_chunk["metadata"]["page_number"]
+        page["page_number"] = page_number
+
+        for page_block in page_blocks:
+            block = {}
+            
+            block_content_start = page_block["pos"][0]
+            block_content_end = page_block["pos"][1]
+
+            block_type = page_block["class"]
+            block_order = page_block["index"]
+            
+            block_content = page_chunk["text"][block_content_start:block_content_end]
+
+            block.update({
+                "block_type": block_type,
+                "block_order": block_order,
+                "content": block_content
+            })
+
+            page["blocks"].append(block)
+
+        return page
+
+    def process_document(self) -> Dict:
+        """Process entire document and return LLM-optimized markdown"""
         
-        for page_num in range(len(self.doc)):
-            print(f"Processing page {page_num + 1}/{len(self.doc)}...", end="\r")
-            parsed_page = self.process_page(page_num)
-            self.parsed_pages.append(parsed_page)
+        logger.info(f"Processing document: {self.document_name}")
         
-        print(f"Processing page {len(self.doc)}/{len(self.doc)}... ✓")
-        print(f"\n✓ Document processing complete!")
+        # Extract page chunks with metadata
+        page_chunks = pymupdf4llm.to_markdown(self.pdf_path, page_chunks=True)
         
-        return self.parsed_pages
-    
-    def process_page(self, page_num: int) -> Dict:
-        """
-        Extract LLM-optimized markdown content from a single page.
+        logger.info(f"Total pages: {page_chunks[0]['metadata']['page_count']}")
         
-        Returns dict with:
-        - page_num: Page number (0-indexed)
-        - markdown: LLM-optimized markdown with proper table parsing
-        """
-        # Extract markdown for this specific page using pymupdf4llm
-        markdown = pymupdf4llm.to_markdown(self.pdf_path, pages=range(page_num, page_num + 1))
-        
-        return {
-            'document_id': self.document_id,
-            'page_num': page_num,
-            'markdown': markdown
+        # Extract document metadata from first page chunk
+        document_metadata = {
+            "name": self.document_name,
+            "id": self.document_id,
+            "metadata": {
+                "page_count": page_chunks[0]["metadata"]["page_count"],
+                "format": page_chunks[0]["metadata"].get("format", ""),
+                "file_path": self.pdf_path
+            }
         }
-    
-    def get_parsed_pages(self) -> List[Dict]:
-        """Return all parsed pages"""
-        return self.parsed_pages
-    
-    def close(self):
-        """Clean up resources"""
-        self.doc.close()
+
+        # Process each page chunk
+        for idx, page_chunk in enumerate(page_chunks):
+            logger.debug(f"Processing page {idx + 1}/{len(page_chunks)}")
+            processed_page_chunk = self.process_page_chunk(page_chunk)
+            self.processed_page_chunks.append(processed_page_chunk)
+        
+        logger.info(f"Document processing complete! Processed {len(page_chunks)} pages")
+        
+        # Build final document structure
+        processed_document = {
+            **document_metadata,
+            "pages": self.processed_page_chunks
+        }
+        
+        return processed_document
     
     def __enter__(self):
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+        pass  # No cleanup needed since we're not opening file handles
