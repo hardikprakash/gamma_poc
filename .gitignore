@@ -1,3 +1,6 @@
+# .env
+.env
+
 # Virtual environments
 .venv/
 venv/
@@ -53,3 +56,4 @@ htmlcov/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+app/core/openrouter.py

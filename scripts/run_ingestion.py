@@ -11,7 +11,7 @@ from app.graphrag.ingestion import PDFIngestor
 import json
 
 # Test with a sample PDF
-pdf_path = "./data/syllabus.pdf"  # Replace with your PDF path
+pdf_path = "./data/infosys_sample.pdf"  # Replace with your PDF path
 
 with PDFIngestor(pdf_path, document_id="test_doc") as ingestor:
     # Process document
@@ -24,7 +24,7 @@ with PDFIngestor(pdf_path, document_id="test_doc") as ingestor:
         'pages': parsed_pages
     }
     
-    with open('parsed_output.json', 'w', encoding='utf-8') as f:
+    with open('./output/parsing/parsed_output.json', 'w', encoding='utf-8') as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
     
     print(f"\n✓ Output saved to parsed_output.json")
@@ -37,11 +37,7 @@ with PDFIngestor(pdf_path, document_id="test_doc") as ingestor:
     print(f"Total pages: {len(parsed_pages)}")
     
     for page in parsed_pages:
-        print(f"\nPage {page['page_num'] + 1}:")
-        region_counts = {}
-        for region in page['regions']:
-            region_type = region['type']
-            region_counts[region_type] = region_counts.get(region_type, 0) + 1
-        
-        for rtype, count in region_counts.items():
-            print(f"  - {rtype}: {count}")
+        page_num = page['page_num'] + 1
+        markdown_size = len(page['markdown'])
+        print(f"\nPage {page_num}: {markdown_size} characters")
+
