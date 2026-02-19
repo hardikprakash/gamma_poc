@@ -4,3 +4,4 @@ pymupdf.layout
 pymupdf4llm
 neo4j
 openai
+rapidfuzz
