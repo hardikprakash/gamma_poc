@@ -6,7 +6,7 @@ from typing import List, Dict
 logger = logging.getLogger(__name__)
 
 
-class PDFIngestor:
+class PDFParser:
     """
     Simple PDF Ingestion Module using pymupdf4llm
     
