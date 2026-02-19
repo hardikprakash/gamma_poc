@@ -91,4 +91,4 @@ class PDFParser:
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        pass  # No cleanup needed since we're not opening file handles
+        pass

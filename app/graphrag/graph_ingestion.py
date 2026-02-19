@@ -72,8 +72,10 @@ class EntityResolver:
 
     def __init__(self, fuzzy_threshold: int = FUZZY_THRESHOLD) -> None:
         self.threshold = fuzzy_threshold
+        
         # canonical_id → ResolvedEntity
         self._registry: dict[str, ResolvedEntity] = {}
+        
         # type → {canonical_id: name}  (for fuzzy lookup)
         self._name_index: dict[str, dict[str, str]] = defaultdict(dict)
 

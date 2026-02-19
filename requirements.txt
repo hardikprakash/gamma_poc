@@ -14,3 +14,6 @@ rapidfuzz
 
 # Config
 python-dotenv
+
+# Frontend
+streamlit

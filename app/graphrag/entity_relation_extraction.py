@@ -145,12 +145,14 @@ class EntityRelationExtractor:
 
     def _call_llm(self, pages: list[dict], known_entity_ids: list[str], page_range: str) -> Optional[str]:
         page_content = self._format_page_content(pages)
+        
         user_message = USER_PROMPT_TEMPLATE.format(
             document_id=self.document_id,
             known_entity_ids=json.dumps(known_entity_ids),
             page_range=page_range,
             page_content=page_content,
             filing_year=self.filing_year
+        
         )
         try:
             response = client.chat.completions.create(
@@ -226,7 +228,7 @@ class EntityRelationExtractor:
             key = (r.source_id,
                    r.type,
                    r.target_id,
-                   r.properties.get("filing_year"),  # ← add this
+                   r.properties.get("filing_year"),
                 )
             if key not in seen:
                 seen.add(key)
