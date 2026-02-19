@@ -2,6 +2,15 @@
 pymupdf
 pymupdf.layout
 pymupdf4llm
+
+# Graph Database
 neo4j
+
+# LLM / API
 openai
+
+# Entity Resolution
 rapidfuzz
+
+# Config
+python-dotenv

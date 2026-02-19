@@ -21,10 +21,10 @@ class Settings:
         self.PDF_INPUT_DIR = os.getenv("PDF_INPUT_DIR", "./data")
         self.PDF_OUTPUT_DIR = os.getenv("PDF_OUTPUT_DIR", "./output")
 
-        # Neo4J
-        NEO4J_URI: str = "bolt://localhost:7687"
-        NEO4J_USER: str = "neo4j"
-        NEO4J_PASSWORD: str = "testpassword"
+        # Neo4j
+        self.NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+        self.NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+        self.NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "testpassword")
 
 
 settings = Settings()
