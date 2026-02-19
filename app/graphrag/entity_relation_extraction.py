@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 
 from app.core.openrouter import client
-from app.core.prompts import entity_relation_extraction_system_prompt as SYSTEM_PROMPT, entity_relation_extraction_user_prompt_template as USER_PROMPT_TEMPLATE
+from app.core.prompts import entity_relation_extraction_system_prompt as SYSTEM_PROMPT_TEMPLATE, entity_relation_extraction_user_prompt_template as USER_PROMPT_TEMPLATE
 from app.domain.ontology import ENTITY_TYPES, RELATIONSHIP_TYPES
 from app.core.config import settings
 
@@ -67,6 +67,14 @@ class EntityRelationExtractor:
         self.document_id: str = self.document_json["id"]
         self.pages: list[dict] = self.document_json.get("pages", [])
         self.filing_year = filing_year
+
+        # Format the system prompt once with the ontology
+        entity_types_str = json.dumps(ENTITY_TYPES, indent=2)
+        relationship_types_str = json.dumps(RELATIONSHIP_TYPES, indent=2)
+        self.system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+            entity_types=entity_types_str,
+            relationship_types=relationship_types_str,
+        )
 
     def process_document(self) -> ExtractionResult:
         """
@@ -148,7 +156,7 @@ class EntityRelationExtractor:
             response = client.chat.completions.create(
                 model=settings.MODEL_NAME, # type: ignore
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": self.system_prompt},
                     {"role": "user",   "content": user_message},
                 ],
                 temperature=0,
