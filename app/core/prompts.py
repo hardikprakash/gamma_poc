@@ -42,9 +42,17 @@ and return ONLY valid JSON — no markdown, no explanation, no code fences.
   link it to the matching Metric and Period entities.
 - If an entity already appeared in previous pages, reuse its exact id — do NOT create duplicates.
 - If you are unsure about an entity or relationship, omit it rather than guessing.
+- Always include "filing_year": <int> in the properties of every relationship you emit.
+  Use the fiscal year of the document being processed.
+- For Segment entities, include "status": "active" unless the text explicitly states 
+  the segment was discontinued, merged, or renamed.
+- For relationships MERGED_INTO, DIVESTED, ACQUIRED, SUCCEEDED_BY — extract these 
+  whenever the text describes structural changes to segments, subsidiaries, or business units.
+  Include "effective_date" in properties where mentioned.
 """
 
 entity_relation_extraction_user_prompt_template =  """Document: {document_id}
+Filing Year: {filing_year}
 Previously seen entity IDs (do NOT re-create these, reuse them in relationships):
 {known_entity_ids}
 

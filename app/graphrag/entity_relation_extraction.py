@@ -49,7 +49,7 @@ class ExtractionResult:
 
 
 class EntityRelationExtractor:
-    def __init__(self, parsed_json_path: str, window_size: int = 3, step_size: int = 2):
+    def __init__(self, parsed_json_path: str, filing_year: str, window_size: int = 3, step_size: int = 2):
         """
         Args:
             parsed_json_path:    Path to the parsed JSON produced by the ingestion module.
@@ -66,7 +66,7 @@ class EntityRelationExtractor:
 
         self.document_id: str = self.document_json["id"]
         self.pages: list[dict] = self.document_json.get("pages", [])
-
+        self.filing_year = filing_year
 
     def process_document(self) -> ExtractionResult:
         """
@@ -142,6 +142,7 @@ class EntityRelationExtractor:
             known_entity_ids=json.dumps(known_entity_ids),
             page_range=page_range,
             page_content=page_content,
+            filing_year=self.filing_year
         )
         try:
             response = client.chat.completions.create(
@@ -214,7 +215,11 @@ class EntityRelationExtractor:
         seen: set[tuple] = set()
         unique: list[Relationship] = []
         for r in rels:
-            key = (r.source_id, r.type, r.target_id)
+            key = (r.source_id,
+                   r.type,
+                   r.target_id,
+                   r.properties.get("filing_year"),  # ← add this
+                )
             if key not in seen:
                 seen.add(key)
                 unique.append(r)
