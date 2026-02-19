@@ -1,4 +1,6 @@
 # PDF Processing
-PyMuPDF
+pymupdf
+pymupdf.layout
 pymupdf4llm
-
+neo4j
+openai
