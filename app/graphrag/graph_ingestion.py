@@ -248,6 +248,7 @@ class GraphIngestor:
         neo4j_user: str | None = None,
         neo4j_password: str | None = None,
         fuzzy_threshold: int = FUZZY_THRESHOLD,
+        
     ) -> None:
         self._uri = neo4j_uri or settings.NEO4J_URI
         self._user = neo4j_user or settings.NEO4J_USER

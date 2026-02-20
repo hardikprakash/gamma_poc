@@ -1,4 +1,6 @@
 import json
+import time
+from collections import deque
 from dataclasses import dataclass, field
 import logging
 from typing import Optional
@@ -60,6 +62,9 @@ class EntityRelationExtractor:
         
         self.window_size = window_size
         self.step_size = step_size
+        self._call_timestamps: deque[float] = deque()
+        self._rate_limit = 20       # max calls per window
+        self._rate_window = 60.0    # seconds
 
         with open(parsed_json_path, "r") as f:
             self.document_json = json.load(f)
@@ -144,6 +149,24 @@ class EntityRelationExtractor:
         return windows
 
     def _call_llm(self, pages: list[dict], known_entity_ids: list[str], page_range: str) -> Optional[str]:
+        # --- rate limiting: max 20 calls per 60 s ---
+        now = time.monotonic()
+        # drop timestamps older than the rolling window
+        while self._call_timestamps and now - self._call_timestamps[0] >= self._rate_window:
+            self._call_timestamps.popleft()
+        if len(self._call_timestamps) >= self._rate_limit:
+            sleep_for = self._rate_window - (now - self._call_timestamps[0])
+            if sleep_for > 0:
+                logger.info("Rate limit reached (%d/%d). Sleeping %.1f s …",
+                            len(self._call_timestamps), self._rate_limit, sleep_for)
+                time.sleep(sleep_for)
+            # refresh timestamps after sleep
+            now = time.monotonic()
+            while self._call_timestamps and now - self._call_timestamps[0] >= self._rate_window:
+                self._call_timestamps.popleft()
+        self._call_timestamps.append(time.monotonic())
+        # --- end rate limiting ---
+
         page_content = self._format_page_content(pages)
         
         user_message = USER_PROMPT_TEMPLATE.format(
