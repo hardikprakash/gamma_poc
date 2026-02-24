@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 import logging
 from typing import Optional
 
-from app.core.openrouter import client
-from app.core.prompts import entity_relation_extraction_system_prompt as SYSTEM_PROMPT_TEMPLATE, entity_relation_extraction_user_prompt_template as USER_PROMPT_TEMPLATE
+from app.core.llm import client
+from app.backends.graphrag.prompts import entity_relation_extraction_system_prompt as SYSTEM_PROMPT_TEMPLATE, entity_relation_extraction_user_prompt_template as USER_PROMPT_TEMPLATE
 from app.domain.ontology import ENTITY_TYPES, RELATIONSHIP_TYPES
 from app.core.config import settings
 

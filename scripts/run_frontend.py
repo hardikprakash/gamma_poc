@@ -13,7 +13,7 @@ import subprocess
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
-frontend_app = os.path.join(project_root, "frontend", "chat.py")
+frontend_app = os.path.join(project_root, "frontend", "main.py")
 
 
 def main() -> None:

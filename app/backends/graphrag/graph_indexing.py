@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from neo4j import GraphDatabase, Driver
 
 from app.core.config import settings
-from app.graphrag.embedding import embed_batch, node_to_text
+from app.backends.graphrag.embedding import embed_batch, node_to_text
 
 logger = logging.getLogger(__name__)
 

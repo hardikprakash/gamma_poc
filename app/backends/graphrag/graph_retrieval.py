@@ -20,7 +20,7 @@ from typing import Any
 from neo4j import GraphDatabase, Driver
 
 from app.core.config import settings
-from app.graphrag.embedding import embed_text
+from app.backends.graphrag.embedding import embed_text
 
 logger = logging.getLogger(__name__)
 

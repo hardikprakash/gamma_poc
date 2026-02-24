@@ -7,7 +7,7 @@ stages: **parsing → extraction → graph ingestion**.
 
 Usage (as a module)::
 
-    from app.pipeline import Pipeline
+    from app.backends.graphrag.pipeline import Pipeline
     pipeline = Pipeline()
     pipeline.run()            # process all PDFs
     pipeline.run("infosys")   # only this company
@@ -24,10 +24,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.config import settings
-from app.graphrag.pdf_parsing import PDFParser
-from app.graphrag.entity_relation_extraction import EntityRelationExtractor
-from app.graphrag.graph_ingestion import GraphIngestor
-from app.graphrag.graph_indexing import GraphIndexer
+from app.backends.graphrag.pdf_parsing import PDFParser
+from app.backends.graphrag.entity_relation_extraction import EntityRelationExtractor
+from app.backends.graphrag.graph_ingestion import GraphIngestor
+from app.backends.graphrag.graph_indexing import GraphIndexer
 
 logger = logging.getLogger(__name__)
 

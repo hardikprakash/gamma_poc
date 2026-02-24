@@ -14,14 +14,14 @@ import json
 import logging
 from typing import Any
 
-from app.core.openrouter import client
+from app.core.llm import client
 from app.core.config import settings
-from app.core.prompts import (
+from app.backends.graphrag.prompts import (
     query_agent_system_prompt as AGENT_SYSTEM_PROMPT,
     answer_generation_prompt as ANSWER_PROMPT,
 )
 from app.domain.ontology import ENTITY_TYPES, RELATIONSHIP_TYPES
-from app.graphrag.graph_retrieval import GraphRetriever
+from app.backends.graphrag.graph_retrieval import GraphRetriever
 
 logger = logging.getLogger(__name__)
 
