@@ -27,6 +27,7 @@ from app.core.config import settings
 from app.graphrag.pdf_parsing import PDFParser
 from app.graphrag.entity_relation_extraction import EntityRelationExtractor
 from app.graphrag.graph_ingestion import GraphIngestor
+from app.graphrag.graph_indexing import GraphIndexer
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +205,17 @@ class Pipeline:
                     if "ingestion" not in s.get("stages", {}):
                         s["stages"]["ingestion"] = {"status": "error", "message": str(exc)}
 
+        # ── Stage 4: Embed and index graph nodes ─────────────────────
+        if extraction_paths:
+            try:
+                indexing_result = self._run_indexing()
+                for s in summaries:
+                    s["stages"]["indexing"] = {"status": "ok", **indexing_result}
+            except Exception as exc:
+                logger.error("Graph indexing failed: %s", exc)
+                for s in summaries:
+                    s["stages"]["indexing"] = {"status": "error", "message": str(exc)}
+
         return summaries
 
     # ── Stage runners ─────────────────────────────────────────────────
@@ -266,6 +278,13 @@ class Pipeline:
             gi.create_indexes()
 
         return results
+
+    def _run_indexing(self) -> dict:
+        """Embed all graph nodes and create vector index.  Returns stats dict."""
+        logger.info("Indexing: generating embeddings and creating vector index")
+        with GraphIndexer() as indexer:
+            stats = indexer.run()
+        return stats.to_dict()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────

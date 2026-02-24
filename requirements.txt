@@ -12,6 +12,9 @@ openai
 # Entity Resolution
 rapidfuzz
 
+# HTTP (for Ollama embeddings)
+httpx
+
 # Config
 python-dotenv
 

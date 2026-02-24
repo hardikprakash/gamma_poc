@@ -84,12 +84,15 @@ should describe what to search for and why.
 
 ### STEP 3 — FETCH
 Execute one or more of these retrieval tools to gather data:
-  - `search_nodes` — find nodes by name (substring match)
+  - `search_nodes` — find nodes by exact name (substring match)
+  - `vector_search` — semantic search by meaning (use when exact name
+    is unknown or the query is conceptual/fuzzy)
   - `get_neighbors` — expand connections from a known node
   - `run_cypher` — execute a precise Cypher query
 
 Call as many retrieval tools as needed until every item in your plan
-is resolved.
+is resolved.  Prefer `vector_search` for exploratory lookups and
+`search_nodes` or `run_cypher` for precise lookups.
 
 ### STEP 4 — ANSWER
 Once you have gathered all the data (or determined some items are

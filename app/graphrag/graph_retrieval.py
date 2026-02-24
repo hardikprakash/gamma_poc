@@ -20,6 +20,7 @@ from typing import Any
 from neo4j import GraphDatabase, Driver
 
 from app.core.config import settings
+from app.graphrag.embedding import embed_text
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,64 @@ class GraphRetriever:
         logger.info("search_nodes(%r, type=%s) → %d nodes", query, entity_type, len(nodes))
         return nodes
 
-    # ── Tool 2: get_neighbors ─────────────────────────────────────────
+    # ── Tool 2: vector_search ─────────────────────────────────────────
+
+    def vector_search(
+        self,
+        query: str,
+        top_k: int = 10,
+        min_score: float = 0.0,
+    ) -> list[dict]:
+        """
+        Semantic vector search: embed the query via Ollama, then find
+        the nearest nodes using Neo4j's vector index.
+
+        Args:
+            query:     Natural-language search string.
+            top_k:     Maximum number of results.
+            min_score: Minimum cosine similarity (0.0–1.0).
+
+        Returns list of node dicts (with a ``_score`` field) and
+        appends them to the accumulated context.
+        """
+        try:
+            query_embedding = embed_text(query)
+        except Exception as exc:
+            logger.error("Failed to embed query: %s", exc)
+            return []
+
+        cypher = (
+            "CALL db.index.vector.queryNodes("
+            "  'node_embedding_index', $topK, $queryVec"
+            ") YIELD node, score "
+            "WHERE score >= $minScore "
+            "RETURN node, score "
+            "ORDER BY score DESC"
+        )
+
+        nodes: list[dict] = []
+        try:
+            with self.driver.session() as session:
+                result = session.run(cypher, {
+                    "topK": top_k,
+                    "queryVec": query_embedding,
+                    "minScore": min_score,
+                })
+                for record in result:
+                    node_dict = _node_to_dict(record["node"])
+                    node_dict["_score"] = round(record["score"], 4)
+                    nodes.append(node_dict)
+        except Exception as exc:
+            logger.error("Vector search failed: %s", exc)
+            # Fallback to substring search
+            logger.info("Falling back to substring search for: %s", query)
+            return self.search_nodes(query)
+
+        self._accumulate_nodes(nodes)
+        logger.info("vector_search(%r) → %d nodes", query, len(nodes))
+        return nodes
+
+    # ── Tool 3: get_neighbors ─────────────────────────────────────────
 
     def get_neighbors(
         self,

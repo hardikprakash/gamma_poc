@@ -138,6 +138,34 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "vector_search",
+            "description": (
+                "Step 3 (Fetch): Semantic search — find nodes whose meaning "
+                "is closest to the query. Uses vector embeddings for fuzzy, "
+                "meaning-based retrieval. Prefer this over search_nodes when "
+                "the exact name is unknown or the query is conceptual."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural-language search query.",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "Max results to return (default 10).",
+                        "default": 10,
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    # Step 3c
+    {
+        "type": "function",
+        "function": {
             "name": "get_neighbors",
             "description": (
                 "Step 3 (Fetch): Expand the neighborhood around a known node. "
@@ -167,7 +195,7 @@ TOOL_DEFINITIONS = [
             },
         },
     },
-    # Step 3c
+    # Step 3d
     {
         "type": "function",
         "function": {
@@ -397,6 +425,13 @@ class QueryAgent:
             nodes = self.retriever.search_nodes(
                 query=args["query"],
                 entity_type=args.get("entity_type"),
+            )
+            return {"nodes_found": len(nodes), "nodes": _compact_nodes(nodes)}
+
+        elif name == "vector_search":
+            nodes = self.retriever.vector_search(
+                query=args["query"],
+                top_k=args.get("top_k", 10),
             )
             return {"nodes_found": len(nodes), "nodes": _compact_nodes(nodes)}
 

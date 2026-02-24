@@ -26,5 +26,11 @@ class Settings:
         self.NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
         self.NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "testpassword")
 
+        # Embeddings (Ollama)
+        self.EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "http://localhost:11434")
+        self.EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "embeddinggemma")
+        self.EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "768"))
+        self.EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
+
 
 settings = Settings()
