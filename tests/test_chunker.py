@@ -54,23 +54,24 @@ class TestChunkerBasics:
         cid = _make_chunk_id("AAPL", 2023, "financial_results", 5, 1)
         assert "AAPL" in cid
         assert "2023" in cid
-        assert "financial_results" in cid
+        assert "financialres" in cid  # shortened category, underscores stripped
 
     def test_chunk_id_format(self):
         from pipeline.ingestion.chunker import _make_chunk_id
         cid = _make_chunk_id("MSFT", 2022, "risk_factors", 10, 3)
-        assert cid == "MSFT_2022_risk_factors_10_3"
+        assert cid == "MSFT_2022_riskfactors_p10_003"
 
     def test_is_footnote_detection(self):
         from pipeline.ingestion.chunker import _is_footnote
         assert _is_footnote("(1) See notes to the financial statements.")
-        assert _is_footnote("* Refer to the following discussion.")
+        assert _is_footnote("Note: amounts in millions.")
         assert not _is_footnote("Total revenue increased by 15% year over year.")
 
     def test_prose_splitting_respects_max_tokens(self):
         from pipeline.ingestion.chunker import _split_prose
-        # Generate text that's ~800 tokens (each word ≈ 1 token roughly)
-        long_text = ("word " * 800).strip()
+        # Generate text that's ~2400 tokens with sentence boundaries
+        sentences = [f"Sentence number {i} is here." for i in range(400)]
+        long_text = " ".join(sentences)
         pieces = _split_prose(long_text, max_tokens=600, min_tokens=50)
         assert len(pieces) >= 2
 

@@ -4,7 +4,7 @@ Pydantic schemas for LLM output validation.
 """
 
 from __future__ import annotations
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, RootModel
 from typing import Optional, Literal
 from dataclasses import dataclass, field
 
@@ -116,11 +116,10 @@ class SectionLabel(BaseModel):
     relevance: str = "medium"
 
 
-class SectionLabelsResponse(BaseModel):
+class SectionLabelsResponse(RootModel[list[SectionLabel]]):
     """Wrapper — LLM returns a JSON array of SectionLabel."""
-    __root__: list[SectionLabel] = []
 
-    # Pydantic v2 compat: allow parsing a raw list
+    # Convenience: allow parsing a raw list
     @classmethod
     def parse_list(cls, data: list[dict]) -> list[SectionLabel]:
         return [SectionLabel.model_validate(item) for item in data]

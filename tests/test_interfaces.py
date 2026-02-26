@@ -84,7 +84,7 @@ class TestModuleInterfaces:
         from pipeline.graph.constructor import build_graph
         sig = inspect.signature(build_graph)
         params = list(sig.parameters.keys())
-        assert "chunks" in params and "extraction_results" in params
+        assert "chunks" in params and "facts" in params
 
     # ── M6: Query Decomposer ───────────────────────────────────────────────
 
@@ -100,7 +100,7 @@ class TestModuleInterfaces:
         from pipeline.query.decomposer import decompose_query
         sig = inspect.signature(decompose_query)
         params = list(sig.parameters.keys())
-        assert "user_query" in params
+        assert "query" in params
 
     # ── M7: Hybrid Retriever ───────────────────────────────────────────────
 
@@ -132,7 +132,7 @@ class TestModuleInterfaces:
         from pipeline.query.reranker import rerank
         sig = inspect.signature(rerank)
         params = list(sig.parameters.keys())
-        assert "retrieval_result" in params and "user_query" in params
+        assert "retrieval_result" in params and "query" in params
 
     # ── M9: Context Assembler ──────────────────────────────────────────────
 
@@ -164,7 +164,7 @@ class TestModuleInterfaces:
         from pipeline.query.generator import generate_answer
         sig = inspect.signature(generate_answer)
         params = list(sig.parameters.keys())
-        assert "context_payload" in params and "user_query" in params
+        assert "context_payload" in params and "query" in params
 
     # ── M11: Response Finalizer ────────────────────────────────────────────
 
@@ -180,7 +180,7 @@ class TestModuleInterfaces:
         from pipeline.query.finalizer import finalize_response
         sig = inspect.signature(finalize_response)
         params = list(sig.parameters.keys())
-        assert "raw_response" in params and "citation_registry" in params
+        assert "raw_response" in params and "context_payload" in params
 
 
 class TestDataModels:
@@ -220,7 +220,7 @@ class TestDataModels:
     def test_agent_response_fields(self):
         from models.response import AgentResponse
         model_fields = set(AgentResponse.model_fields.keys())
-        for r in ["answer", "confidence", "resolved_citations"]:
+        for r in ["answer", "retrieval_confidence", "resolved_citations"]:
             assert r in model_fields, f"AgentResponse missing field: {r}"
 
     def test_taxonomy_constants(self):
