@@ -40,6 +40,10 @@ build/
 htmlcov/
 .tox/
 
+# Ingest checkpoints
+.ingest_checkpoints/
+.ingest_checkpoint
+
 # Environment variables
 .env
 .env.local

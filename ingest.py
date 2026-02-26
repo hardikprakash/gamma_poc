@@ -2,10 +2,16 @@
 """
 CLI ingest script — processes PDF financial documents into the Neo4j knowledge graph.
 
+Features:
+  • Per-document, per-chunk checkpointing (survives crashes / quota exhaustion)
+  • Resumable M4 extraction — only re-processes un-extracted chunks
+  • Embedding-model tracking — swap models and re-embed without redoing M1-M4
+  • ``--from-stage`` flag to force restart from a specific pipeline stage
+
 Usage:
     python ingest.py --pdf-dir ./data
-    python ingest.py --pdf-dir ./data --company "Apple Inc." --ticker AAPL --fiscal-year 2023
     python ingest.py --pdf ./data/AAPL_2023.pdf --company "Apple Inc." --ticker AAPL --fiscal-year 2023
+    python ingest.py --pdf-dir ./data --from-stage emb   # re-embed with a new model
 """
 
 from __future__ import annotations
@@ -34,28 +40,18 @@ from pipeline.ingestion.chunker import chunk_document
 from pipeline.graph.extractor import extract_facts
 from pipeline.graph.constructor import build_graph
 from llm.embedding_client import embed_batch
+from checkpoint import (
+    IngestCheckpoint,
+    CHECKPOINT_DIR,
+    STAGES,
+    get_completed_doc_keys,
+)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
 )
 logger = logging.getLogger("ingest")
-
-CHECKPOINT_FILE = ".ingest_checkpoint"
-
-
-# ── Checkpoint helpers ───────────────────────────────────────────────────────
-
-def _load_checkpoint(path: str) -> set[str]:
-    if not os.path.exists(path):
-        return set()
-    with open(path) as f:
-        return {line.strip() for line in f if line.strip()}
-
-
-def _save_checkpoint(path: str, doc_id: str) -> None:
-    with open(path, "a") as f:
-        f.write(doc_id + "\n")
 
 
 # ── Service connectivity checks ──────────────────────────────────────────────
@@ -121,56 +117,152 @@ async def ingest_single_pdf(
     fiscal_year: int,
     graph_client: Neo4jClient,
     doc_type_hint: str = "",
+    checkpoint_dir: str = CHECKPOINT_DIR,
+    from_stage: str | None = None,
 ) -> dict:
-    """Run the full M1→M5 pipeline on a single PDF."""
+    """Run the full M1→M5 pipeline on a single PDF with per-chunk checkpointing.
+
+    If *from_stage* is set (e.g. ``"emb"``), all stages before it are assumed
+    done and their cached results are loaded from the checkpoint directory.
+    """
+    doc_key = f"{ticker}_{fiscal_year}"
+    ckpt = IngestCheckpoint(doc_key, checkpoint_dir)
+
+    # Store metadata for future resume
+    ckpt.set_meta(pdf_path=pdf_path, company=company, ticker=ticker, fiscal_year=fiscal_year)
+
     logger.info(f"=== Ingesting: {pdf_path} ===")
     logger.info(f"    Company: {company} | Ticker: {ticker} | FY: {fiscal_year}")
+    logger.info(f"    Checkpoint: {ckpt.summary()}")
+
+    # If --from-stage was requested, invalidate that stage and everything after
+    if from_stage and from_stage in STAGES:
+        logger.info(f"  --from-stage={from_stage}: invalidating {from_stage}+ and re-running")
+        ckpt.invalidate_from(from_stage)
 
     t0 = time.time()
 
-    # ── M1: Parse ────────────────────────────────────────────────────────────
-    logger.info("  [M1] Parsing PDF...")
-    parsed_doc = parse_pdf(pdf_path)
-    logger.info(f"  [M1] Done: {parsed_doc.total_pages} pages")
+    # ── M1 + M2 + M3: Parse → Structure → Chunk ─────────────────────────────
+    # These are grouped: if chunks are cached we skip all three.
+    chunks = None
+    if ckpt.is_stage_done("m1m2m3"):
+        chunks = ckpt.load_chunks()
+        if chunks is not None:
+            logger.info(f"  [M1-M3] Loaded {len(chunks)} cached chunks from checkpoint")
 
-    # ── M2: Structure Inference ──────────────────────────────────────────────
-    logger.info("  [M2] Inferring structure (3 LLM calls)...")
-    structured_doc = await infer_structure(parsed_doc, company, fiscal_year, ticker)
-    if doc_type_hint:
-        structured_doc.doc_type = doc_type_hint
-    logger.info(f"  [M2] Done: type={structured_doc.doc_type}, {len(structured_doc.sections)} sections")
+    if chunks is None:
+        # M1: Parse
+        logger.info("  [M1] Parsing PDF...")
+        parsed_doc = parse_pdf(pdf_path)
+        logger.info(f"  [M1] Done: {parsed_doc.total_pages} pages")
 
-    # ── M3: Chunking ─────────────────────────────────────────────────────────
-    logger.info("  [M3] Chunking...")
-    chunks = chunk_document(structured_doc)
-    logger.info(f"  [M3] Done: {len(chunks)} chunks")
+        # M2: Structure Inference
+        logger.info("  [M2] Inferring structure (3 LLM calls)...")
+        structured_doc = await infer_structure(parsed_doc, company, fiscal_year, ticker)
+        if doc_type_hint:
+            structured_doc.doc_type = doc_type_hint
+        logger.info(
+            f"  [M2] Done: type={structured_doc.doc_type}, "
+            f"{len(structured_doc.sections)} sections"
+        )
 
-    # ── M4: Fact Extraction ──────────────────────────────────────────────────
-    logger.info(f"  [M4] Extracting facts ({len(chunks)} chunks, 1 LLM call each)...")
-    all_facts = []
-    all_entities = []
-    all_risk_factors = []
+        # M3: Chunking
+        logger.info("  [M3] Chunking...")
+        chunks = chunk_document(structured_doc)
+        logger.info(f"  [M3] Done: {len(chunks)} chunks")
 
-    batch_size = 5
-    for i in range(0, len(chunks), batch_size):
-        batch = chunks[i:i + batch_size]
-        tasks = [extract_facts(chunk) for chunk in batch]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for result in results:
-            if isinstance(result, Exception):
-                logger.warning(f"    Extraction error: {result}")
-                continue
-            all_facts.extend(result.facts)
-            all_entities.extend(result.entities)
-            all_risk_factors.extend(result.risk_factors)
-        logger.info(f"    Batch {i // batch_size + 1}: processed {len(batch)} chunks")
+        # Persist M3 output + metadata
+        ckpt.save_chunks(chunks)
+        ckpt.set_meta(
+            doc_type=structured_doc.doc_type,
+            total_pages=parsed_doc.total_pages,
+            total_chunks=len(chunks),
+        )
+        ckpt.mark_stage_done("m1m2m3")
+    else:
+        # pull doc_type / total_pages from cached state
+        pass
 
-    logger.info(
-        f"  [M4] Done: {len(all_facts)} facts, {len(all_entities)} entities, "
-        f"{len(all_risk_factors)} risk factors"
-    )
+    doc_type = ckpt.get_meta("doc_type") or "other"
+    total_pages = ckpt.get_meta("total_pages") or 0
+
+    # ── M4: Fact Extraction (per-chunk resumable) ────────────────────────────
+    if ckpt.is_stage_done("m4_extract"):
+        logger.info("  [M4] Already complete (checkpoint) — loading cached extractions")
+        all_facts, all_entities, all_risk_factors = ckpt.load_all_extractions()
+        logger.info(
+            f"  [M4] Loaded: {len(all_facts)} facts, {len(all_entities)} entities, "
+            f"{len(all_risk_factors)} risk factors"
+        )
+    else:
+        already_extracted = ckpt.get_extracted_chunk_ids()
+        pending = [c for c in chunks if c.chunk_id not in already_extracted]
+
+        if already_extracted:
+            logger.info(
+                f"  [M4] Resuming extraction: {len(already_extracted)} done, "
+                f"{len(pending)} remaining"
+            )
+        else:
+            logger.info(
+                f"  [M4] Extracting facts ({len(chunks)} chunks, 1 LLM call each)..."
+            )
+
+        batch_size = 5
+        for i in range(0, len(pending), batch_size):
+            batch = pending[i : i + batch_size]
+            tasks = [extract_facts(chunk) for chunk in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for chunk, result in zip(batch, results):
+                if isinstance(result, Exception):
+                    logger.warning(
+                        f"    Extraction error for {chunk.chunk_id}: {result}"
+                    )
+                    continue
+                # Persist immediately — survives next crash
+                ckpt.append_extraction(
+                    chunk.chunk_id,
+                    result.facts,
+                    result.entities,
+                    result.risk_factors,
+                )
+            batch_num = (len(already_extracted) + i) // batch_size + 1
+            logger.info(f"    Batch {batch_num}: processed {len(batch)} chunks")
+
+        # Verify all chunks done (some may have failed persistently)
+        final_extracted = ckpt.get_extracted_chunk_ids()
+        skipped = len(chunks) - len(final_extracted)
+        if skipped:
+            logger.warning(
+                f"  [M4] {skipped} chunk(s) had extraction errors and were skipped"
+            )
+
+        ckpt.mark_stage_done("m4_extract")
+
+        # Load consolidated extraction results
+        all_facts, all_entities, all_risk_factors = ckpt.load_all_extractions()
+        logger.info(
+            f"  [M4] Done: {len(all_facts)} facts, {len(all_entities)} entities, "
+            f"{len(all_risk_factors)} risk factors"
+        )
 
     # ── Embeddings ───────────────────────────────────────────────────────────
+    model_changed = ckpt.embedding_model_changed(EMBEDDING_MODEL)
+    if ckpt.is_stage_done("emb") and not model_changed:
+        logger.info(
+            f"  [EMB] Already complete (checkpoint, model={ckpt.get_embedding_model()})"
+        )
+        # Embeddings live in-memory on chunks for M5 — must regenerate
+        # (they are not persisted due to size). Quick via local Ollama.
+        logger.info("  [EMB] Re-generating embeddings from Ollama (needed for M5)...")
+    else:
+        if model_changed:
+            logger.info(
+                f"  [EMB] Model changed ({ckpt.get_embedding_model()} → {EMBEDDING_MODEL})"
+                " — regenerating all embeddings"
+            )
+
+    # Always generate chunk + risk embeddings in-memory for M5
     logger.info("  [EMB] Generating chunk embeddings...")
     chunk_texts = [c.content for c in chunks]
     if chunk_texts:
@@ -193,9 +285,12 @@ async def ingest_single_pdf(
         except Exception as e:
             logger.warning(f"  [EMB] Risk embedding failed: {e}")
 
+    ckpt.set_embedding_model(EMBEDDING_MODEL)
+    ckpt.mark_stage_done("emb")
+
     # ── M5: Graph Construction ───────────────────────────────────────────────
     logger.info("  [M5] Building graph...")
-    doc_id = f"{ticker}_{fiscal_year}_{structured_doc.doc_type}"
+    doc_id = f"{ticker}_{fiscal_year}_{doc_type}"
     graph_result = build_graph(
         chunks=chunks,
         facts=all_facts,
@@ -206,14 +301,16 @@ async def ingest_single_pdf(
         company=company,
         ticker=ticker,
         fiscal_year=fiscal_year,
-        doc_type=structured_doc.doc_type,
-        total_pages=parsed_doc.total_pages,
+        doc_type=doc_type,
+        total_pages=total_pages,
     )
     logger.info(
         f"  [M5] Done: {graph_result.nodes_created} nodes, "
         f"{graph_result.edges_created} edges, "
         f"{graph_result.embeddings_written} embeddings"
     )
+    ckpt.mark_stage_done("m5_graph")
+    ckpt.mark_complete()
 
     duration = time.time() - t0
     logger.info(f"=== Ingest complete: {pdf_path} ({duration:.1f}s) ===\n")
@@ -263,10 +360,13 @@ async def main():
     parser.add_argument("--ticker", type=str, default=None, help="Stock ticker")
     parser.add_argument("--fiscal-year", type=int, default=None, help="Fiscal year")
     parser.add_argument("--doc-type", type=str, default="", help="Document type hint")
-    parser.add_argument("--checkpoint-file", type=str, default=CHECKPOINT_FILE,
-                        help=f"File tracking completed doc_ids (default: {CHECKPOINT_FILE})")
+    parser.add_argument("--checkpoint-dir", type=str, default=CHECKPOINT_DIR,
+                        help=f"Directory for per-doc checkpoints (default: {CHECKPOINT_DIR})")
     parser.add_argument("--reset-checkpoint", action="store_true",
-                        help="Clear checkpoint and re-ingest all documents")
+                        help="Wipe all checkpoint data and re-ingest from scratch")
+    parser.add_argument("--from-stage", type=str, default=None,
+                        choices=list(STAGES),
+                        help="Force restart from this pipeline stage (e.g. 'emb' to re-embed)")
     parser.add_argument("--skip-checks", action="store_true",
                         help="Skip service connectivity checks")
     args = parser.parse_args()
@@ -280,14 +380,17 @@ async def main():
             logger.error("(Use --skip-checks to bypass if you know what you're doing.)")
             sys.exit(1)
 
-    # ── Checkpoint ───────────────────────────────────────────────────────────
-    if args.reset_checkpoint and os.path.exists(args.checkpoint_file):
-        os.remove(args.checkpoint_file)
-        logger.info(f"Checkpoint cleared: {args.checkpoint_file}")
+    # ── Checkpoint reset ─────────────────────────────────────────────────────
+    if args.reset_checkpoint and os.path.isdir(args.checkpoint_dir):
+        import shutil
+        shutil.rmtree(args.checkpoint_dir)
+        logger.info(f"Checkpoint directory wiped: {args.checkpoint_dir}")
 
-    completed_doc_ids = _load_checkpoint(args.checkpoint_file)
-    if completed_doc_ids:
-        logger.info(f"Checkpoint: {len(completed_doc_ids)} already-completed doc(s) will be skipped.")
+    completed_doc_keys = get_completed_doc_keys(args.checkpoint_dir)
+    if completed_doc_keys:
+        logger.info(
+            f"Checkpoint: {len(completed_doc_keys)} fully-completed doc(s) will be skipped."
+        )
 
     # ── Initialize Neo4j ─────────────────────────────────────────────────────
     graph_client = Neo4jClient()
@@ -328,28 +431,28 @@ async def main():
             )
             continue
 
-        # Checkpoint key: ticker+year is stable before M2 resolves doc_type
-        checkpoint_key = f"{ticker}_{fiscal_year}"
-        if checkpoint_key in completed_doc_ids:
-            logger.info(f"Skipping (already completed): {pdf_path}  [{checkpoint_key}]")
+        doc_key = f"{ticker}_{fiscal_year}"
+
+        # Skip fully-completed docs (unless --from-stage forces a re-run)
+        if doc_key in completed_doc_keys and not args.from_stage:
+            logger.info(f"Skipping (already completed): {pdf_path}  [{doc_key}]")
             continue
 
         try:
             result = await ingest_single_pdf(
                 pdf_path, company, ticker, fiscal_year,
-                graph_client, args.doc_type
+                graph_client, args.doc_type,
+                checkpoint_dir=args.checkpoint_dir,
+                from_stage=args.from_stage,
             )
             results.append(result)
-            # Save both the provisional key and the fully-resolved doc_id (includes doc_type)
-            _save_checkpoint(args.checkpoint_file, checkpoint_key)
-            resolved_id = result["doc_id"]
-            if resolved_id != checkpoint_key:
-                _save_checkpoint(args.checkpoint_file, resolved_id)
-            logger.info(f"Checkpoint saved: {checkpoint_key}")
+        except KeyboardInterrupt:
+            logger.warning(f"Interrupted during {pdf_path} — progress saved in checkpoint.")
+            raise
         except Exception as exc:
             logger.error(
                 f"FAILED: {pdf_path} — {type(exc).__name__}: {exc}\n"
-                f"  Skipping to next document. Re-run to retry."
+                f"  Progress saved in checkpoint. Re-run to resume."
             )
             failed.append({"path": pdf_path, "error": str(exc)})
 
@@ -368,7 +471,7 @@ async def main():
     logger.info(f"  Entities:  {total_entities}")
     logger.info(f"  Duration:  {total_duration:.1f}s")
     if failed:
-        logger.info("  Failed files (will be retried on next run):")
+        logger.info("  Failed files (progress saved — re-run to resume):")
         for f in failed:
             logger.info(f"    {f['path']}: {f['error']}")
 

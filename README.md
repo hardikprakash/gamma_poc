@@ -80,17 +80,88 @@ docker exec -it $(docker ps -q -f name=ollama) ollama pull nomic-embed-text
 
 ### 5. Ingest Documents
 
+#### Basic usage
+
 ```bash
-# Ingest all PDFs in a directory
-python ingest.py --pdf-dir ./data/pdfs/
+# Ingest all PDFs in a directory (filenames like AAPL_2023.pdf are auto-parsed)
+python ingest.py --pdf-dir ./data/
 
 # Ingest a single file with explicit metadata
-python ingest.py --pdf ./data/apple_10k_2023.pdf \
+python ingest.py --pdf ./data/AAPL_2023.pdf \
     --company "Apple Inc." --ticker AAPL \
     --fiscal-year 2023 --doc-type 10-K
 ```
 
-The CLI infers company/ticker/year from filenames when not specified.
+The CLI infers `company`, `ticker`, and `fiscal_year` from filenames (e.g. `AAPL_2023.pdf` → ticker=AAPL, year=2023). Use the explicit flags to override.
+
+#### Checkpointing and crash recovery
+
+Every run writes per-document checkpoints to `.ingest_checkpoints/` so that an interrupted run (power cut, API quota exhaustion, `Ctrl-C`) can be resumed from exactly where it stopped.
+
+```bash
+# Simply re-run the same command — already-completed chunks are skipped automatically
+python ingest.py --pdf-dir ./data/
+
+# Override the default checkpoint directory
+python ingest.py --pdf-dir ./data/ --checkpoint-dir /tmp/my_checkpoints
+
+# Wipe all checkpoint data and start completely from scratch
+python ingest.py --pdf-dir ./data/ --reset-checkpoint
+```
+
+Checkpoints are stored under `.ingest_checkpoints/<TICKER_YEAR>/`:
+
+| File | Contents |
+|------|----------|
+| `state.json` | Stage completion flags and embedding model name |
+| `chunks.json` | Cached M3 chunker output (avoids re-parsing) |
+| `extractions.jsonl` | One JSON line per extracted chunk (M4, append-only) |
+| `COMPLETE` | Marker written after M5 succeeds |
+
+#### Re-embedding with a different model
+
+M4 extraction (the expensive LLM step) results are preserved in `extractions.jsonl`. To swap embedding models and rebuild embeddings + graph without re-running extraction:
+
+1. Change `EMBEDDING_MODEL` in your `.env` (or `config.py`).
+2. Run with `--from-stage emb`:
+
+```bash
+# Re-embed all documents with the new model and rebuild the graph
+python ingest.py --pdf-dir ./data/ --from-stage emb
+
+# Or for a single document
+python ingest.py --pdf ./data/AAPL_2023.pdf \
+    --ticker AAPL --fiscal-year 2023 \
+    --from-stage emb
+```
+
+The ingest run will skip M1-M4 entirely and only regenerate embeddings (M4 → EMB → M5).
+
+#### Forcing a restart from any pipeline stage
+
+Use `--from-stage` to re-run from any stage without wiping the whole checkpoint:
+
+| Value | Re-runs from |
+|-------|-------------|
+| `m1m2m3` | Parse → Structure → Chunk (full re-process) |
+| `m4_extract` | LLM fact extraction only (re-uses cached chunks) |
+| `emb` | Embedding generation + graph rebuild |
+| `m5_graph` | Graph construction only |
+
+```bash
+# Re-extract facts (e.g. after prompt changes)
+python ingest.py --pdf-dir ./data/ --from-stage m4_extract
+
+# Rebuild graph only (e.g. after schema changes)
+python ingest.py --pdf-dir ./data/ --from-stage m5_graph
+```
+
+#### Other flags
+
+```
+--skip-checks     Skip Ollama / Neo4j / OpenRouter connectivity checks at startup
+--checkpoint-dir  Override default checkpoint directory (.ingest_checkpoints/)
+```
 
 ### 6. Start API Server
 
@@ -197,8 +268,9 @@ Test coverage:
 │       ├── generator.py
 │       └── finalizer.py
 ├── tests/                 # Unit & contract tests
+├── checkpoint.py          # Per-doc/per-chunk checkpoint manager
 ├── config.py              # Central configuration
-├── ingest.py              # CLI ingest script
+├── ingest.py              # CLI ingest script (M1-M5)
 ├── requirements.txt
 └── docker-compose.yaml
 ```
