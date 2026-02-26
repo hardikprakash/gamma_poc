@@ -17,10 +17,16 @@ import os
 import sys
 import time
 
+import httpx
+
 # Ensure project root is on path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import PDF_INPUT_DIR
+from config import (
+    PDF_INPUT_DIR, NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD,
+    OLLAMA_BASE_URL, EMBEDDING_MODEL,
+    OPENROUTER_BASE_URL, OPENROUTER_API_KEY, LLM_MODEL,
+)
 from db.neo4j_client import Neo4jClient
 from pipeline.ingestion.parser import parse_pdf
 from pipeline.ingestion.structure import infer_structure
@@ -34,6 +40,78 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
 )
 logger = logging.getLogger("ingest")
+
+CHECKPOINT_FILE = ".ingest_checkpoint"
+
+
+# ── Checkpoint helpers ───────────────────────────────────────────────────────
+
+def _load_checkpoint(path: str) -> set[str]:
+    if not os.path.exists(path):
+        return set()
+    with open(path) as f:
+        return {line.strip() for line in f if line.strip()}
+
+
+def _save_checkpoint(path: str, doc_id: str) -> None:
+    with open(path, "a") as f:
+        f.write(doc_id + "\n")
+
+
+# ── Service connectivity checks ──────────────────────────────────────────────
+
+async def _check_services() -> bool:
+    """Verify Neo4j, Ollama, and OpenRouter are reachable before starting. Returns True if all pass."""
+    ok = True
+
+    # ── Neo4j ────────────────────────────────────────────────────────────────
+    logger.info("[CHECK] Neo4j ...")
+    try:
+        client = Neo4jClient()
+        client.query("RETURN 1")
+        client.close()
+        logger.info(f"[CHECK] Neo4j OK  ({NEO4J_URI})")
+    except Exception as exc:
+        logger.error(f"[CHECK] Neo4j FAIL ({NEO4J_URI}): {exc}")
+        ok = False
+
+    # ── Ollama ───────────────────────────────────────────────────────────────
+    logger.info("[CHECK] Ollama ...")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as http:
+            resp = await http.get(f"{OLLAMA_BASE_URL}/api/tags")
+            resp.raise_for_status()
+            models = [m["name"] for m in resp.json().get("models", [])]
+            if not any(EMBEDDING_MODEL in m for m in models):
+                logger.warning(
+                    f"[CHECK] Ollama OK but model '{EMBEDDING_MODEL}' not found. "
+                    f"Pull it with: docker exec ollama ollama pull {EMBEDDING_MODEL}"
+                )
+            else:
+                logger.info(f"[CHECK] Ollama OK  ({OLLAMA_BASE_URL}, model={EMBEDDING_MODEL})")
+    except Exception as exc:
+        logger.error(f"[CHECK] Ollama FAIL ({OLLAMA_BASE_URL}): {exc}")
+        ok = False
+
+    # ── OpenRouter / LLM ────────────────────────────────────────────────────
+    logger.info("[CHECK] OpenRouter ...")
+    if not OPENROUTER_API_KEY:
+        logger.error("[CHECK] OpenRouter FAIL: OPENROUTER_API_KEY is not set")
+        ok = False
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as http:
+                resp = await http.get(
+                    f"{OPENROUTER_BASE_URL}/models",
+                    headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+                )
+                resp.raise_for_status()
+                logger.info(f"[CHECK] OpenRouter OK  (model={LLM_MODEL})")
+        except Exception as exc:
+            logger.error(f"[CHECK] OpenRouter FAIL ({OPENROUTER_BASE_URL}): {exc}")
+            ok = False
+
+    return ok
 
 
 async def ingest_single_pdf(
@@ -185,14 +263,38 @@ async def main():
     parser.add_argument("--ticker", type=str, default=None, help="Stock ticker")
     parser.add_argument("--fiscal-year", type=int, default=None, help="Fiscal year")
     parser.add_argument("--doc-type", type=str, default="", help="Document type hint")
+    parser.add_argument("--checkpoint-file", type=str, default=CHECKPOINT_FILE,
+                        help=f"File tracking completed doc_ids (default: {CHECKPOINT_FILE})")
+    parser.add_argument("--reset-checkpoint", action="store_true",
+                        help="Clear checkpoint and re-ingest all documents")
+    parser.add_argument("--skip-checks", action="store_true",
+                        help="Skip service connectivity checks")
     args = parser.parse_args()
 
-    # Initialize Neo4j
+    # ── Service connectivity checks ──────────────────────────────────────────
+    if not args.skip_checks:
+        logger.info("Checking service connectivity...")
+        all_ok = await _check_services()
+        if not all_ok:
+            logger.error("One or more services are unreachable. Fix above errors and retry.")
+            logger.error("(Use --skip-checks to bypass if you know what you're doing.)")
+            sys.exit(1)
+
+    # ── Checkpoint ───────────────────────────────────────────────────────────
+    if args.reset_checkpoint and os.path.exists(args.checkpoint_file):
+        os.remove(args.checkpoint_file)
+        logger.info(f"Checkpoint cleared: {args.checkpoint_file}")
+
+    completed_doc_ids = _load_checkpoint(args.checkpoint_file)
+    if completed_doc_ids:
+        logger.info(f"Checkpoint: {len(completed_doc_ids)} already-completed doc(s) will be skipped.")
+
+    # ── Initialize Neo4j ─────────────────────────────────────────────────────
     graph_client = Neo4jClient()
     graph_client.setup_schema()
     logger.info("Neo4j schema initialized.")
 
-    # Collect PDFs
+    # ── Collect PDFs ─────────────────────────────────────────────────────────
     if args.pdf:
         pdf_files = [args.pdf]
     else:
@@ -204,8 +306,9 @@ async def main():
 
     logger.info(f"Found {len(pdf_files)} PDF files to ingest.")
 
-    # Process each PDF
+    # ── Process each PDF ─────────────────────────────────────────────────────
     results = []
+    failed = []
     for pdf_path in pdf_files:
         if args.company and args.ticker and args.fiscal_year:
             company, ticker, fiscal_year = args.company, args.ticker, args.fiscal_year
@@ -225,13 +328,32 @@ async def main():
             )
             continue
 
-        result = await ingest_single_pdf(
-            pdf_path, company, ticker, fiscal_year,
-            graph_client, args.doc_type
-        )
-        results.append(result)
+        # Checkpoint key: ticker+year is stable before M2 resolves doc_type
+        checkpoint_key = f"{ticker}_{fiscal_year}"
+        if checkpoint_key in completed_doc_ids:
+            logger.info(f"Skipping (already completed): {pdf_path}  [{checkpoint_key}]")
+            continue
 
-    # Summary
+        try:
+            result = await ingest_single_pdf(
+                pdf_path, company, ticker, fiscal_year,
+                graph_client, args.doc_type
+            )
+            results.append(result)
+            # Save both the provisional key and the fully-resolved doc_id (includes doc_type)
+            _save_checkpoint(args.checkpoint_file, checkpoint_key)
+            resolved_id = result["doc_id"]
+            if resolved_id != checkpoint_key:
+                _save_checkpoint(args.checkpoint_file, resolved_id)
+            logger.info(f"Checkpoint saved: {checkpoint_key}")
+        except Exception as exc:
+            logger.error(
+                f"FAILED: {pdf_path} — {type(exc).__name__}: {exc}\n"
+                f"  Skipping to next document. Re-run to retry."
+            )
+            failed.append({"path": pdf_path, "error": str(exc)})
+
+    # ── Summary ──────────────────────────────────────────────────────────────
     logger.info("=" * 60)
     logger.info("INGEST SUMMARY")
     logger.info("=" * 60)
@@ -239,11 +361,16 @@ async def main():
     total_facts = sum(r["facts_created"] for r in results)
     total_entities = sum(r["entities_created"] for r in results)
     total_duration = sum(r["duration_seconds"] for r in results)
-    logger.info(f"  Documents: {len(results)}")
+    logger.info(f"  Documents completed: {len(results)}")
+    logger.info(f"  Documents failed:    {len(failed)}")
     logger.info(f"  Chunks:    {total_chunks}")
     logger.info(f"  Facts:     {total_facts}")
     logger.info(f"  Entities:  {total_entities}")
     logger.info(f"  Duration:  {total_duration:.1f}s")
+    if failed:
+        logger.info("  Failed files (will be retried on next run):")
+        for f in failed:
+            logger.info(f"    {f['path']}: {f['error']}")
 
     graph_client.close()
 
