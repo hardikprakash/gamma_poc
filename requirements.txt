@@ -1,22 +1,17 @@
-# PDF Processing
-pymupdf
-pymupdf.layout
-pymupdf4llm
-
-# Graph Database
-neo4j
-
-# LLM / API
-openai
-
-# Entity Resolution
-rapidfuzz
-
-# HTTP (for Ollama embeddings)
-httpx
-
-# Config
-python-dotenv
-
-# Frontend
-streamlit
+pymupdf>=1.24.0
+pdfplumber>=0.11.0
+neo4j>=5.20.0
+openai>=1.30.0
+sentence-transformers>=3.0.0
+pydantic>=2.7.0
+rapidfuzz>=3.9.0
+scikit-learn>=1.5.0
+numpy>=1.26.0
+fastapi>=0.111.0
+uvicorn>=0.30.0
+python-dotenv>=1.0.0
+tiktoken>=0.7.0
+httpx>=0.27.0
+streamlit>=1.35.0
+pandas>=2.2.0
+python-multipart>=0.0.9
