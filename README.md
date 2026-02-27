@@ -156,6 +156,54 @@ python ingest.py --pdf-dir ./data/ --from-stage m4_extract
 python ingest.py --pdf-dir ./data/ --from-stage m5_graph
 ```
 
+#### Resetting everything and ingesting new documents
+
+To wipe the Neo4j graph **and** checkpoint state so you can start fresh with different documents:
+
+```bash
+# 1. Clear all nodes and relationships in Neo4j
+python -c "
+from db.neo4j_client import Neo4jClient
+c = Neo4jClient(); c.query('MATCH (n) DETACH DELETE n'); c.close()
+print('Neo4j wiped.')
+"
+
+# 2. Wipe checkpoints and ingest the new documents
+python ingest.py --pdf-dir ./data/new_docs/ --reset-checkpoint
+```
+
+> **Note:** `--reset-checkpoint` alone only removes local checkpoint files.
+> It does **not** delete data already written to Neo4j.
+> If you want a clean graph you must clear Neo4j separately (step 1).
+
+#### Re-embedding with a different model
+
+To swap embedding models without re-running the expensive M4 LLM extraction:
+
+```bash
+# 1. Update .env (or export directly)
+#    Change EMBEDDING_MODEL — and EMBEDDING_DIMENSIONS if the new model uses a different size
+export EMBEDDING_MODEL=mxbai-embed-large        # 1024-dim model
+export EMBEDDING_DIMENSIONS=1024
+
+# 2. Pull the new model into Ollama
+docker exec -it $(docker ps -q -f name=ollama) ollama pull mxbai-embed-large
+
+# 3. Drop the old vector index (dimensions are baked in)
+python -c "
+from db.neo4j_client import Neo4jClient
+c = Neo4jClient(); c.query('DROP INDEX chunk_embedding_index IF EXISTS'); c.close()
+print('Old vector index dropped.')
+"
+
+# 4. Re-embed + rebuild graph (skips M1-M4)
+python ingest.py --pdf-dir ./data/ --from-stage emb
+```
+
+`--from-stage emb` re-uses the cached chunks and extracted facts, only regenerating
+embeddings with the new model and rebuilding the graph (which recreates the vector index
+with the new dimensions).
+
 #### Other flags
 
 ```

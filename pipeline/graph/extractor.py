@@ -65,7 +65,7 @@ Return JSON:
     try:
         llm_result: ExtractionLLMResponse = await validated_llm_call(
             prompt, ExtractionLLMResponse, system=_EXTRACTION_SYSTEM
-        )
+        ) # type: ignore
     except Exception as e:
         logger.warning(f"Fact extraction failed for chunk {chunk.chunk_id}: {e}")
         return ExtractionResult(facts=[], entities=[], risk_factors=[])
