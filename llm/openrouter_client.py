@@ -3,7 +3,7 @@ OpenRouter LLM client — OpenAI-compatible API.
 """
 
 from openai import AsyncOpenAI
-from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, LLM_MODEL
+from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, LLM_MODEL, LLM_MAX_TOKENS
 
 client = AsyncOpenAI(
     api_key=OPENROUTER_API_KEY,
@@ -21,6 +21,7 @@ async def complete(prompt: str, system: str | None = None) -> str:
         model=LLM_MODEL,
         messages=messages,
         temperature=0.1,
+        max_tokens=LLM_MAX_TOKENS,
         response_format={"type": "json_object"},
     )
     return response.choices[0].message.content
