@@ -21,7 +21,7 @@ LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
 
 # ── Embeddings via Ollama ───────────────────────────────────────────────────
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "nomic-embed-text")
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "nomic-embed-text-v2-moe")
 EMBEDDING_DIMENSIONS = int(os.environ.get("EMBEDDING_DIMENSIONS", "768"))
 
 # ── Re-ranker ───────────────────────────────────────────────────────────────
