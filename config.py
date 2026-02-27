@@ -17,7 +17,7 @@ NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", os.environ.get("NEO4J_PASSWORD
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", os.environ.get("OPENAI_API_BASE_URL", "https://openrouter.ai/api/v1"))
 LLM_MODEL = os.environ.get("LLM_MODEL", os.environ.get("MODEL_NAME", "openai/gpt-4o-2024-11-20"))
-LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "8192"))
 
 # ── Embeddings via Ollama ───────────────────────────────────────────────────
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")

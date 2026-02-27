@@ -47,8 +47,9 @@ from checkpoint import (
     get_completed_doc_keys,
 )
 
+_log_level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
 logging.basicConfig(
-    level=logging.INFO,
+    level=_log_level,
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
 )
 logger = logging.getLogger("ingest")
@@ -267,10 +268,12 @@ async def ingest_single_pdf(
     chunk_texts = [c.content for c in chunks]
     if chunk_texts:
         try:
+            logger.info(f"  [EMB] Sending {len(chunk_texts)} chunks to Ollama (single request)...")
+            t0 = time.time()
             embeddings = await embed_batch(chunk_texts)
             for chunk, emb in zip(chunks, embeddings):
                 chunk.embedding = emb
-            logger.info(f"  [EMB] Done: {len(embeddings)} chunk embeddings")
+            logger.info(f"  [EMB] Done: {len(embeddings)} chunk embeddings in {time.time() - t0:.1f}s")
         except Exception as e:
             logger.warning(f"  [EMB] Chunk embedding failed: {e}")
 
@@ -278,10 +281,12 @@ async def ingest_single_pdf(
     risk_texts = [rf.title + " " + rf.summary for rf in all_risk_factors]
     if risk_texts:
         try:
+            logger.info(f"  [EMB] Sending {len(risk_texts)} risk factors to Ollama...")
+            t0 = time.time()
             risk_embs = await embed_batch(risk_texts)
             for rf, emb in zip(all_risk_factors, risk_embs):
                 rf.embedding = emb
-            logger.info(f"  [EMB] Done: {len(risk_embs)} risk factor embeddings")
+            logger.info(f"  [EMB] Done: {len(risk_embs)} risk factor embeddings in {time.time() - t0:.1f}s")
         except Exception as e:
             logger.warning(f"  [EMB] Risk embedding failed: {e}")
 

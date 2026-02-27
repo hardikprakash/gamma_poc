@@ -8,6 +8,7 @@ from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, LLM_MODEL, LLM_MAX_T
 client = AsyncOpenAI(
     api_key=OPENROUTER_API_KEY,
     base_url=OPENROUTER_BASE_URL,
+    timeout=60.0,  # seconds — prevents silent hangs on slow/dropped requests
 )
 
 

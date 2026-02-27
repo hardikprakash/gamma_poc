@@ -63,6 +63,7 @@ Return JSON:
 }}"""
 
     try:
+        logger.debug(f"[M4] Starting extraction for chunk {chunk.chunk_id} ({chunk.chunk_type}, {len(chunk.content)} chars)")
         llm_result: ExtractionLLMResponse = await validated_llm_call(
             prompt, ExtractionLLMResponse, system=_EXTRACTION_SYSTEM
         ) # type: ignore

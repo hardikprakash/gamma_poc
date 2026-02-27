@@ -4,7 +4,7 @@ Pydantic schemas for LLM output validation.
 """
 
 from __future__ import annotations
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, Field, RootModel, model_validator
 from typing import Optional, Literal
 from dataclasses import dataclass, field
 
@@ -136,16 +136,73 @@ class ExtractedFact(BaseModel):
     is_comparative: bool = False
     verbatim_text: str = ""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_and_validate(cls, data: object) -> object:
+        if isinstance(data, dict):
+            data = {k.strip(): v for k, v in data.items()}
+            # Coerce None unit to default
+            if data.get("unit") is None:
+                data["unit"] = "units"
+            # Reject facts with no usable value
+            if data.get("value") is None:
+                raise ValueError(f"Skipping fact with null value: {data.get('metric_name')!r}")
+        return data
+
 
 class ExtractedEntity(BaseModel):
     name: str
     entity_type: str = "company"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_and_validate(cls, data: object) -> object:
+        if isinstance(data, dict):
+            data = {k.strip(): v for k, v in data.items()}
+            # Discard entities with placeholder/junk names
+            name = data.get("name", "")
+            if not name or set(name.strip()) <= set("?-_. "):
+                raise ValueError(f"Skipping junk entity name: {name!r}")
+        return data
 
 
 class ExtractionLLMResponse(BaseModel):
     facts: list[ExtractedFact] = Field(default_factory=list)
     entities: list[ExtractedEntity] = Field(default_factory=list)
     risk_themes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _filter_junk(cls, data: object) -> object:
+        """Strip whitespace from keys; drop facts with null value; drop entities with junk names."""
+        if not isinstance(data, dict):
+            return data
+        # Filter facts
+        facts = data.get("facts", [])
+        if isinstance(facts, list):
+            clean_facts = []
+            for f in facts:
+                if isinstance(f, dict):
+                    f = {k.strip(): v for k, v in f.items()}
+                    if f.get("value") is None:
+                        continue  # silently drop
+                    if f.get("unit") is None:
+                        f["unit"] = "units"
+                clean_facts.append(f)
+            data = {**data, "facts": clean_facts}
+        # Filter entities
+        entities = data.get("entities", [])
+        if isinstance(entities, list):
+            clean_entities = []
+            for e in entities:
+                if isinstance(e, dict):
+                    e = {k.strip(): v for k, v in e.items()}
+                    name = e.get("name", "")
+                    if not name or set(str(name).strip()) <= set("?-_. "):
+                        continue  # silently drop junk
+                clean_entities.append(e)
+            data = {**data, "entities": clean_entities}
+        return data
 
 
 # ── Extraction result ───────────────────────────────────────────────────────
