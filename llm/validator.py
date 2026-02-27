@@ -61,8 +61,13 @@ async def validated_llm_call(
             else:
                 return schema.model_validate_json(text)
         except (ValidationError, json.JSONDecodeError) as e:
+            # Classify the failure to help debugging:
+            # - Short response (<50 chars): OpenRouter routing/metadata leak
+            # - Ends abruptly mid-JSON: token limit truncation
+            # - Other: malformed model output
+            raw_snippet = repr(text[:120]) if len(text) <= 120 else f"{repr(text[:60])}...({len(text)} chars)...{repr(text[-40:])}"
             if attempt == 0:
-                logger.warning(f"[LLM] Validation error on {label}: {e} — retrying")
+                logger.warning(f"[LLM] Validation error on {label}: {e} — raw: {raw_snippet} — retrying")
                 current_prompt = (
                     prompt
                     + f"\n\nPREVIOUS ATTEMPT FAILED: {e}\n"
