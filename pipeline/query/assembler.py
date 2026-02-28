@@ -40,13 +40,15 @@ def assemble_context(
     # ── Register FACT blocks (always first) ──────────────────────────────────
     for fact in rerank_result.facts:
         key = _make_fact_citation_key(fact, registry)
+        # Use explicit page_start if available; fall back to chunk_id parsing for legacy data
+        fact_page = fact.page_start if fact.page_start >= 0 else _page_from_chunk_id(fact.source_chunk_id)
         entry = CitationEntry(
             key=key,
             chunk_id=fact.source_chunk_id,
             company=fact.company,
             fiscal_year=fact.fiscal_year,
             section_path="",
-            page=_page_from_chunk_id(fact.source_chunk_id),
+            page=fact_page,
             chunk_type="fact",
             confidence=fact.confidence,
             content_preview=f"{fact.metric_name_canonical}: {fact.value} {fact.unit} ({fact.period})",

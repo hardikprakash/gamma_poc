@@ -155,12 +155,31 @@ def render_query_page():
 import re as _re
 
 
-def _highlight_citation_keys(text: str, known_keys: set) -> str:
-    """Replace [KEY] in answer text with `KEY` (code span) for visual clarity."""
+def _display_page(page_0indexed: int | str) -> str:
+    """Convert 0-indexed page number to 1-indexed for display."""
+    try:
+        return str(int(page_0indexed) + 1)
+    except (ValueError, TypeError):
+        return "?"
+
+
+def _escape_dollars(text: str) -> str:
+    """Escape bare $ signs so Streamlit doesn't render them as KaTeX math."""
+    # Replace $ that aren't already escaped (\$) with \$
+    return _re.sub(r'(?<!\\)\$', r'\\$', text)
+
+
+def _highlight_citation_keys(text: str, known_keys: set, citation_page_map: dict | None = None) -> str:
+    """Replace [KEY] in answer text with styled KEY + page reference."""
+    if citation_page_map is None:
+        citation_page_map = {}
+
     def replace(m):
         key = m.group(0)
         if key in known_keys:
-            # code span makes it visually distinct in markdown
+            page = citation_page_map.get(key)
+            if page is not None:
+                return f"`{key}` *(p. {_display_page(page)})*"
             return f"`{key}`"
         return key
     return _re.sub(r'\[[^\]\s]{3,50}\]', replace, text)
@@ -170,6 +189,9 @@ def render_answer(data: dict):
     """Render the agent's response."""
     resolved_citations = data.get("resolved_citations", [])
     known_keys = {c.get("key", "") for c in resolved_citations}
+
+    # Build citation → page lookup (0-indexed)
+    citation_page_map = {c.get("key", ""): c.get("page") for c in resolved_citations if c.get("page") is not None}
 
     # 1. Confidence badge + latency
     confidence = data.get("retrieval_confidence", {})
@@ -184,10 +206,19 @@ def render_answer(data: dict):
         f"· _{latency_s:.1f}s_"
     )
 
-    # 2. Answer text (with citation keys highlighted as code spans)
+    # 2. Answer text (with citation keys highlighted + page numbers)
     st.markdown("---")
     answer_text = data.get("answer", "No answer generated.")
-    st.markdown(_highlight_citation_keys(answer_text, known_keys))
+    answer_text = _escape_dollars(answer_text)
+    st.markdown(_highlight_citation_keys(answer_text, known_keys, citation_page_map))
+
+    # 2b. Page references summary
+    pages_referenced = sorted(
+        {int(c.get("page", -1)) for c in resolved_citations if c.get("page") is not None and int(c.get("page", -1)) >= 0}
+    )
+    if pages_referenced:
+        page_labels = ", ".join(_display_page(p) for p in pages_referenced)
+        st.caption(f"📄 Referenced PDF pages: {page_labels}")
 
     # 3. Unanswerable sub-questions
     unanswerable = data.get("unanswerable_sub_questions", [])
@@ -215,7 +246,7 @@ def render_answer(data: dict):
 
 
 def render_citations(citations: list[dict]):
-    """Render citations grouped by company and year."""
+    """Render citations grouped by company and year with prominent page numbers."""
     if not citations:
         st.caption("No citations.")
         return
@@ -230,12 +261,16 @@ def render_citations(citations: list[dict]):
             confidence_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(
                 c.get("confidence", ""), "⚪"
             )
+            page_display = _display_page(c.get("page", -1))
+            page_badge = f"📄 Page {page_display}" if page_display != "?" else ""
             with st.expander(
                 f"{confidence_icon} `{c.get('key', '')}` · "
-                f"{c.get('section_path', '')} · p{c.get('page', '')} · "
+                f"{c.get('section_path', '')} · {page_badge} · "
                 f"{c.get('chunk_type', '')}",
                 expanded=False,
             ):
+                if page_badge:
+                    st.markdown(f"**{page_badge}** — {c.get('chunk_type', 'unknown')} source")
                 st.caption(c.get("content_preview", ""))
 
 

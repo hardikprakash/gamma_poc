@@ -98,6 +98,7 @@ Return JSON:
             source_chunk_id=chunk.chunk_id,
             confidence=confidence,
             verbatim_text=raw_fact.verbatim_text[:60],
+            page_start=chunk.page_start,
         )
         facts.append(fact)
 

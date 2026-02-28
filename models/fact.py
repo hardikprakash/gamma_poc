@@ -23,6 +23,7 @@ class FinancialFact(BaseModel):
     source_chunk_id: str
     confidence: str = "medium"  # high | medium | low
     verbatim_text: str = ""
+    page_start: int = -1  # 0-indexed PDF page; -1 = unknown (legacy data)
 
 
 class Entity(BaseModel):

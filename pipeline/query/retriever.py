@@ -113,6 +113,7 @@ async def graph_fact_lookup(
                         source_chunk_id=f.get("source_chunk_id", ""),
                         confidence=f.get("confidence", "medium"),
                         verbatim_text=f.get("verbatim_text", ""),
+                        page_start=int(f.get("page_start", -1)),
                     )
                     facts.append(fact)
                 except Exception as e:
@@ -160,6 +161,7 @@ async def _follow_same_metric_edges(
                         source_chunk_id=linked.get("source_chunk_id", ""),
                         confidence=linked.get("confidence", "medium"),
                         verbatim_text=linked.get("verbatim_text", ""),
+                        page_start=int(linked.get("page_start", -1)),
                     )
                     all_facts.append(f)
                     seen_ids.add(f.fact_id)

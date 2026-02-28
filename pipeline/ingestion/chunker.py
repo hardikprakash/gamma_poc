@@ -55,8 +55,6 @@ def chunk_document(structured_doc: StructuredDocument) -> list[Chunk]:
     chunk_seq_counters: dict[str, int] = {}
 
     for section in sections:
-        # Collect prose text for this section's page range
-        prose_text = _get_section_prose(parsed_doc, section)
         tables = _get_section_tables(parsed_doc, section)
 
         # Create table chunks
@@ -83,15 +81,24 @@ def chunk_document(structured_doc: StructuredDocument) -> list[Chunk]:
                 token_count=token_count,
             ))
 
-        # Create prose chunks — split by sentence boundary
-        if prose_text.strip():
-            prose_chunks = _split_prose(prose_text, MAX_CHUNK_TOKENS, MIN_CHUNK_TOKENS)
-            for chunk_text in prose_chunks:
+        # Create prose chunks — split by sentence boundary with page tracking
+        page_blocks = _get_section_prose_with_pages(parsed_doc, section)
+        if page_blocks:
+            # Build a combined text with page boundary markers
+            annotated_sentences: list[tuple[str, int]] = []  # (sentence, page_idx)
+            for page_text, page_idx in page_blocks:
+                for sent in re.split(r'(?<=[.!?])\s+', page_text):
+                    if sent.strip():
+                        annotated_sentences.append((sent, page_idx))
+
+            # Split into chunks respecting token limits, tracking page range
+            prose_chunk_data = _split_prose_with_pages(annotated_sentences, MAX_CHUNK_TOKENS, MIN_CHUNK_TOKENS)
+            for chunk_text, chunk_page_start, chunk_page_end in prose_chunk_data:
                 token_count = len(_encoder.encode(chunk_text))
                 seq = _next_seq(chunk_seq_counters, section, fiscal_year, ticker)
                 chunk_id = _make_chunk_id(
                     ticker, fiscal_year, section.semantic_category,
-                    section.page_start, seq,
+                    chunk_page_start, seq,
                 )
 
                 # Detect footnote chunks
@@ -107,8 +114,8 @@ def chunk_document(structured_doc: StructuredDocument) -> list[Chunk]:
                     doc_type=doc_type,
                     section_path=section.section_path,
                     semantic_category=section.semantic_category,
-                    page_start=section.page_start,
-                    page_end=section.page_end,
+                    page_start=chunk_page_start,
+                    page_end=chunk_page_end,
                     chunk_type=chunk_type,
                     content=chunk_text,
                     token_count=token_count,
@@ -148,6 +155,22 @@ def _get_section_prose(parsed_doc, section: SectionMeta) -> str:
     return " ".join(texts)
 
 
+def _get_section_prose_with_pages(parsed_doc, section: SectionMeta) -> list[tuple[str, int]]:
+    """Gather prose text blocks with their page indices for accurate page tracking."""
+    if not parsed_doc:
+        return []
+    result: list[tuple[str, int]] = []
+    for page in parsed_doc.pages:
+        if section.page_start <= page.page_idx <= section.page_end:
+            page_texts = []
+            for block in page.text_blocks:
+                if not block.is_heading:
+                    page_texts.append(block.text)
+            if page_texts:
+                result.append((" ".join(page_texts), page.page_idx))
+    return result
+
+
 def _get_section_tables(parsed_doc, section: SectionMeta) -> list:
     """Gather all tables from pages in this section's range."""
     if not parsed_doc:
@@ -178,6 +201,40 @@ def _split_prose(text: str, max_tokens: int, min_tokens: int) -> list[str]:
 
     if current:
         chunks.append(" ".join(current))
+
+    return chunks
+
+
+def _split_prose_with_pages(
+    annotated_sentences: list[tuple[str, int]],
+    max_tokens: int,
+    min_tokens: int,
+) -> list[tuple[str, int, int]]:
+    """Split annotated sentences into chunks, tracking page_start and page_end per chunk.
+    Returns list of (chunk_text, page_start, page_end)."""
+    chunks: list[tuple[str, int, int]] = []
+    current_sents: list[str] = []
+    current_tokens = 0
+    current_page_start: int | None = None
+    current_page_end: int = 0
+
+    for sent, page_idx in annotated_sentences:
+        sent_tokens = len(_encoder.encode(sent))
+        if current_tokens + sent_tokens > max_tokens and current_sents:
+            chunks.append((" ".join(current_sents), current_page_start or 0, current_page_end))
+            current_sents = [sent]
+            current_tokens = sent_tokens
+            current_page_start = page_idx
+            current_page_end = page_idx
+        else:
+            current_sents.append(sent)
+            current_tokens += sent_tokens
+            if current_page_start is None:
+                current_page_start = page_idx
+            current_page_end = page_idx
+
+    if current_sents:
+        chunks.append((" ".join(current_sents), current_page_start or 0, current_page_end))
 
     return chunks
 

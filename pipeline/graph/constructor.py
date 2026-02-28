@@ -136,7 +136,8 @@ def build_graph(
                 f.is_comparative = $is_comparative,
                 f.source_chunk_id = $source_chunk_id,
                 f.confidence = $confidence,
-                f.verbatim_text = $verbatim_text
+                f.verbatim_text = $verbatim_text,
+                f.page_start = $page_start
         """, **fact.model_dump())
         nodes_created += 1
 
