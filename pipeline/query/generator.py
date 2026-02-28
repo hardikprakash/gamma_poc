@@ -11,6 +11,7 @@ import logging
 
 from models.response import RawLLMResponse, ContextPayload, QueryDecomposition
 from llm.validator import validated_llm_call
+from config import LLM_QUERY_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ Return JSON:
 }}"""
 
     result = await validated_llm_call(
-        prompt, RawLLMResponse, system=_GENERATION_SYSTEM
+        prompt, RawLLMResponse, system=_GENERATION_SYSTEM, max_tokens=LLM_QUERY_MAX_TOKENS
     )
 
     logger.info(

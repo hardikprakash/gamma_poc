@@ -30,7 +30,7 @@ if "query_history" not in st.session_state:
 def fetch_corpus():
     """Fetch corpus info from backend."""
     try:
-        response = httpx.get(f"{BACKEND_URL}/corpus", timeout=10.0)
+        response = httpx.get(f"{BACKEND_URL}/corpus", timeout=90.0)
         if response.status_code == 200:
             return response.json().get("documents", [])
     except Exception:
@@ -111,7 +111,7 @@ def render_query_page():
                         "companies": selected_companies,
                         "years": selected_years,
                     },
-                    timeout=30.0,
+                    timeout=90.0,
                 )
             except httpx.ConnectError:
                 st.error("Cannot connect to backend. Is the FastAPI server running?")
@@ -143,26 +143,51 @@ def render_query_page():
 
         elif response.status_code == 422:
             st.error(f"Query error: {response.json().get('detail', 'Unknown error')}")
+        elif response.status_code == 504:
+            st.error(
+                "⏳ The language model timed out — OpenRouter may be under load. "
+                "Please wait a few seconds and try again."
+            )
         else:
-            st.error(f"Backend error: {response.status_code}")
+            st.error(f"Backend error {response.status_code}: {response.json().get('detail', response.text)}")
+
+
+import re as _re
+
+
+def _highlight_citation_keys(text: str, known_keys: set) -> str:
+    """Replace [KEY] in answer text with `KEY` (code span) for visual clarity."""
+    def replace(m):
+        key = m.group(0)
+        if key in known_keys:
+            # code span makes it visually distinct in markdown
+            return f"`{key}`"
+        return key
+    return _re.sub(r'\[[^\]\s]{3,50}\]', replace, text)
 
 
 def render_answer(data: dict):
     """Render the agent's response."""
-    # 1. Confidence badge
+    resolved_citations = data.get("resolved_citations", [])
+    known_keys = {c.get("key", "") for c in resolved_citations}
+
+    # 1. Confidence badge + latency
     confidence = data.get("retrieval_confidence", {})
     label = confidence.get("label", "LOW")
     color = {"HIGH": "green", "MEDIUM": "orange", "LOW": "red"}.get(label, "red")
+    latency_s = data.get("latency_ms", 0) / 1000
     st.markdown(
         f"**Confidence:** :{color}[{label}] "
         f"({confidence.get('answered_by_facts', 0)} facts, "
         f"{confidence.get('answered_by_chunks', 0)} text sources, "
-        f"{confidence.get('unanswered', 0)} unanswered)"
+        f"{confidence.get('unanswered', 0)} unanswered) "
+        f"· _{latency_s:.1f}s_"
     )
 
-    # 2. Answer text
+    # 2. Answer text (with citation keys highlighted as code spans)
     st.markdown("---")
-    st.markdown(data.get("answer", "No answer generated."))
+    answer_text = data.get("answer", "No answer generated.")
+    st.markdown(_highlight_citation_keys(answer_text, known_keys))
 
     # 3. Unanswerable sub-questions
     unanswerable = data.get("unanswerable_sub_questions", [])
@@ -180,8 +205,9 @@ def render_answer(data: dict):
 
     # 5. Citations panel
     st.markdown("---")
-    st.markdown("**Sources used:**")
-    render_citations(data.get("resolved_citations", []))
+    n_cites = len(resolved_citations)
+    st.markdown(f"**Sources used** ({n_cites}):" if n_cites else "**Sources used:**")
+    render_citations(resolved_citations)
 
     # 6. Debug expander
     with st.expander("Debug: full response"):

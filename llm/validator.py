@@ -21,18 +21,20 @@ async def validated_llm_call(
     system: str | None = None,
     *,
     is_list: bool = False,
+    max_tokens: int | None = None,
 ) -> BaseModel | list:
     """
     Call LLM, parse & validate output with Pydantic.
     One retry on validation failure.
     If is_list=True, parse as JSON list and validate each element against schema.
+    Pass max_tokens to override the default token budget (useful for query-time calls).
     """
     current_prompt = prompt
     for attempt in range(2):
         label = f"{schema.__name__} attempt={attempt + 1}"
         logger.debug(f"[LLM] → {label}: sending request")
         t0 = time.monotonic()
-        raw = await openrouter_client.complete(current_prompt, system=system)
+        raw = await openrouter_client.complete(current_prompt, system=system, max_tokens=max_tokens)
         elapsed = time.monotonic() - t0
         logger.debug(f"[LLM] ← {label}: response in {elapsed:.1f}s ({len(raw)} chars)")
         if elapsed > 30:

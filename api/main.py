@@ -84,55 +84,74 @@ async def query_endpoint(request: QueryRequest):
     else:
         filter_years = available_years
 
-    # ── Step 1: Query Decomposition ──────────────────────────────────────────
-    from pipeline.query.decomposer import decompose_query
-    decomposition = await decompose_query(
-        request.query, filter_companies, filter_years
-    )
+    try:
+        # ── Step 1: Query Decomposition ──────────────────────────────────────
+        from pipeline.query.decomposer import decompose_query
+        decomposition = await decompose_query(
+            request.query, filter_companies, filter_years
+        )
 
-    # Validate decomposed companies exist in corpus
-    if decomposition.companies:
-        unknown = [c for c in decomposition.companies if c not in available_companies]
-        if unknown and not any(c in available_companies for c in decomposition.companies):
-            raise HTTPException(
-                status_code=422,
-                detail=f"Query references companies not in corpus: {unknown}. Available: {available_companies}"
-            )
-        # Keep only valid companies
-        decomposition.companies = [c for c in decomposition.companies if c in available_companies]
+        # Validate decomposed companies exist in corpus
+        if decomposition.companies:
+            unknown = [c for c in decomposition.companies if c not in available_companies]
+            if unknown and not any(c in available_companies for c in decomposition.companies):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Query references companies not in corpus: {unknown}. Available: {available_companies}"
+                )
+            # Keep only valid companies
+            decomposition.companies = [c for c in decomposition.companies if c in available_companies]
+            if not decomposition.companies:
+                decomposition.companies = filter_companies
+
         if not decomposition.companies:
             decomposition.companies = filter_companies
 
-    if not decomposition.companies:
-        decomposition.companies = filter_companies
+        # ── Step 2: Hybrid Retrieval ─────────────────────────────────────────
+        from pipeline.query.retriever import retrieve
+        retrieval_result = await retrieve(decomposition, _async_client)
 
-    # ── Step 2: Hybrid Retrieval ─────────────────────────────────────────────
-    from pipeline.query.retriever import retrieve
-    retrieval_result = await retrieve(decomposition, _async_client)
+        # ── Step 3: Re-ranking ───────────────────────────────────────────────
+        from pipeline.query.reranker import rerank
+        rerank_result = rerank(request.query, retrieval_result)
 
-    # ── Step 3: Re-ranking ───────────────────────────────────────────────────
-    from pipeline.query.reranker import rerank
-    rerank_result = rerank(request.query, retrieval_result)
+        # ── Step 4: Context Assembly ─────────────────────────────────────────
+        from pipeline.query.assembler import assemble_context
+        context_payload = assemble_context(rerank_result, decomposition)
 
-    # ── Step 4: Context Assembly ─────────────────────────────────────────────
-    from pipeline.query.assembler import assemble_context
-    context_payload = assemble_context(rerank_result, decomposition)
+        # ── Step 5: Answer Generation ────────────────────────────────────────
+        from pipeline.query.generator import generate_answer
+        raw_response = await generate_answer(
+            request.query, context_payload, decomposition
+        )
 
-    # ── Step 5: Answer Generation ────────────────────────────────────────────
-    from pipeline.query.generator import generate_answer
-    raw_response = await generate_answer(
-        request.query, context_payload, decomposition
-    )
+        # ── Step 6: Finalization ─────────────────────────────────────────────
+        from pipeline.query.finalizer import finalize_response
+        latency_ms = int((time.time() - start) * 1000)
+        response = finalize_response(
+            raw_response, context_payload, decomposition, rerank_result, latency_ms
+        )
+        response.query = request.query
 
-    # ── Step 6: Finalization ─────────────────────────────────────────────────
-    from pipeline.query.finalizer import finalize_response
-    latency_ms = int((time.time() - start) * 1000)
-    response = finalize_response(
-        raw_response, context_payload, decomposition, rerank_result, latency_ms
-    )
-    response.query = request.query
+        return response
 
-    return response
+    except HTTPException:
+        raise  # pass through 422s raised above
+    except TimeoutError as exc:
+        latency_ms = int((time.time() - start) * 1000)
+        logger.error(f"LLM timeout after {latency_ms}ms for query: {request.query!r}")
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"The language model did not respond within the time limit "
+                f"({latency_ms / 1000:.0f}s). OpenRouter may be under load — "
+                "please retry in a few seconds."
+            ),
+        ) from exc
+    except Exception as exc:
+        latency_ms = int((time.time() - start) * 1000)
+        logger.exception(f"Unexpected error in query pipeline after {latency_ms}ms")
+        raise HTTPException(status_code=500, detail=f"Internal error: {type(exc).__name__}: {exc}") from exc
 
 
 # ── GET /corpus ──────────────────────────────────────────────────────────────

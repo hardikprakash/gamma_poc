@@ -6,6 +6,7 @@ No LLM calls.
 
 from __future__ import annotations
 import logging
+import re
 
 from models.response import (
     AgentResponse,
@@ -57,6 +58,33 @@ def finalize_response(
 
     if orphaned_keys:
         logger.warning(f"Orphaned citation keys (not in registry): {orphaned_keys}")
+
+    # ── Fallback: parse citation keys directly from the answer text ──────────
+    # The LLM sometimes writes [KEY] in the answer but omits them from
+    # citations_used in the structured JSON.  Scan the text as a safety net.
+    already_resolved_keys = {c["key"] for c in resolved_citations}
+    inline_keys = re.findall(r'\[[^\]\s]{3,50}\]', raw_response.answer)
+    for key in dict.fromkeys(inline_keys):  # preserve order, deduplicate
+        if key in already_resolved_keys:
+            continue
+        entry = registry.resolve(key)
+        if entry:
+            resolved_citations.append({
+                "key": key,
+                "company": entry.company,
+                "fiscal_year": entry.fiscal_year,
+                "section_path": entry.section_path,
+                "page": entry.page,
+                "chunk_type": entry.chunk_type,
+                "confidence": entry.confidence,
+                "content_preview": entry.content_preview[:200],
+            })
+            already_resolved_keys.add(key)
+            if entry.is_fact and entry.fact_id:
+                facts_used.append(entry.fact_id)
+            logger.debug(f"Recovered inline citation key: {key}")
+        else:
+            logger.debug(f"Inline key not in registry (may be prose not a citation): {key}")
 
     # ── Merge conflicts from reranker + LLM ──────────────────────────────────
     all_conflicts = list(set(rerank_result.conflicts + raw_response.conflicts_detected))

@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from models.response import QueryDecomposition
 from llm.validator import validated_llm_call
+from config import LLM_QUERY_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,8 @@ If the query covers all available years, use the full list of years.
 If the query is about a specific year not in the available years, still include it so the system can flag it as unavailable.
 Always generate at least one sub_question."""
 
-    result = await validated_llm_call(prompt, QueryDecomposition, system=_DECOMPOSER_SYSTEM)
+    result = await validated_llm_call(prompt, QueryDecomposition, system=_DECOMPOSER_SYSTEM,
+                                      max_tokens=LLM_QUERY_MAX_TOKENS)
 
     # Post-processing: validate years
     if isinstance(result.years, str) and result.years == "all":
