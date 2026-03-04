@@ -14,9 +14,12 @@ No Neo4j, no embeddings — pure pipeline inspection.
 from __future__ import annotations
 
 import asyncio
+import logging
+import queue
 import os
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -41,64 +44,191 @@ def _get_encoder():
     return tiktoken.get_encoding("cl100k_base")
 
 
+# ── Live log capture ─────────────────────────────────────────────────────────
+
+LEVEL_COLOURS = {
+    "DEBUG":    "#888",
+    "INFO":     "#4C9BE8",
+    "WARNING":  "#E8954C",
+    "ERROR":    "#E8504C",
+    "CRITICAL": "#E8504C",
+}
+
+
+class _QueueHandler(logging.Handler):
+    """Logging handler that pushes formatted records into a queue."""
+    def __init__(self, log_queue: queue.Queue):
+        super().__init__()
+        self._q = log_queue
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            self._q.put_nowait(self.format(record))
+        except Exception:
+            pass
+
+
+def _render_log_lines(lines: list[str]) -> str:
+    """Render log lines as a dark scrollable box with level-coloured prefixes."""
+    html_lines = []
+    for line in lines[-200:]:  # cap at last 200 lines
+        colour = "#ccc"
+        for level, col in LEVEL_COLOURS.items():
+            if f" {level} " in line or f" {level}:" in line:
+                colour = col
+                break
+        escaped = (
+            line.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+        )
+        html_lines.append(
+            f'<div style="color:{colour};white-space:pre;font-size:0.76rem;'
+            f'line-height:1.5;font-family:monospace">{escaped}</div>'
+        )
+    inner = "\n".join(html_lines)
+    return (
+        f'<div style="background:#0e1117;border:1px solid #333;border-radius:6px;'
+        f'padding:10px 14px;height:320px;overflow-y:auto;'
+        f'display:flex;flex-direction:column-reverse">'
+        f'<div>{inner}</div></div>'
+    )
+
+
 # ── Pipeline helpers ─────────────────────────────────────────────────────────
 
-def _run_m1_m3(pdf_path: str, company: str, ticker: str, fiscal_year: int):
-    """M1 + M3 only (no LLM): fast mode."""
+def _pipeline_fast(pdf_path: str, company: str, ticker: str, fiscal_year: int):
+    """M1 + M3 only (no LLM). Called from background thread."""
     from pipeline.ingestion.parser import parse_pdf
     from pipeline.ingestion.chunker import chunk_document
     from models.response import StructuredDocument
 
-    with st.spinner("M1 — Parsing PDF…"):
-        t0 = time.time()
-        parsed_doc = parse_pdf(pdf_path)
-        parse_time = time.time() - t0
+    t0 = time.time()
+    parsed_doc = parse_pdf(pdf_path)
+    parse_time = time.time() - t0
 
-    with st.spinner("M3 — Chunking (no structure inference)…"):
-        t0 = time.time()
-        structured_doc = StructuredDocument(
-            doc_type="other",
-            sections=[],          # triggers single-section fallback in chunker
-            table_classifications={},
-            parsed_doc=parsed_doc,
-            company=company,
-            ticker=ticker,
-            fiscal_year=fiscal_year,
-        )
-        chunks = chunk_document(structured_doc)
-        chunk_time = time.time() - t0
+    t0 = time.time()
+    structured_doc = StructuredDocument(
+        doc_type="other",
+        sections=[],
+        table_classifications={},
+        parsed_doc=parsed_doc,
+        company=company,
+        ticker=ticker,
+        fiscal_year=fiscal_year,
+    )
+    chunks = chunk_document(structured_doc)
+    chunk_time = time.time() - t0
 
-    return parsed_doc, chunks, parse_time, chunk_time
+    return parsed_doc, None, chunks, parse_time, None, chunk_time
 
 
-async def _run_m1_m2_m3_async(pdf_path: str, company: str, ticker: str, fiscal_year: int):
-    """M1 + M2 (LLM) + M3: full mode."""
+async def _pipeline_full_async(pdf_path: str, company: str, ticker: str, fiscal_year: int):
+    """M1 + M2 (LLM) + M3. Called from background thread via asyncio.run."""
     from pipeline.ingestion.parser import parse_pdf
     from pipeline.ingestion.structure import infer_structure
     from pipeline.ingestion.chunker import chunk_document
 
-    with st.spinner("M1 — Parsing PDF…"):
-        t0 = time.time()
-        parsed_doc = parse_pdf(pdf_path)
-        parse_time = time.time() - t0
+    t0 = time.time()
+    parsed_doc = parse_pdf(pdf_path)
+    parse_time = time.time() - t0
 
-    with st.spinner("M2 — Inferring structure (3 LLM calls)…"):
-        t0 = time.time()
-        structured_doc = await infer_structure(parsed_doc, company, fiscal_year, ticker)
-        struct_time = time.time() - t0
+    t0 = time.time()
+    structured_doc = await infer_structure(parsed_doc, company, fiscal_year, ticker)
+    struct_time = time.time() - t0
 
-    with st.spinner("M3 — Chunking…"):
-        t0 = time.time()
-        chunks = chunk_document(structured_doc)
-        chunk_time = time.time() - t0
+    t0 = time.time()
+    chunks = chunk_document(structured_doc)
+    chunk_time = time.time() - t0
 
     return parsed_doc, structured_doc, chunks, parse_time, struct_time, chunk_time
 
 
-def _run_full(pdf_path: str, company: str, ticker: str, fiscal_year: int):
-    return asyncio.run(
-        _run_m1_m2_m3_async(pdf_path, company, ticker, fiscal_year)
-    )
+def _pipeline_full(pdf_path: str, company: str, ticker: str, fiscal_year: int):
+    return asyncio.run(_pipeline_full_async(pdf_path, company, ticker, fiscal_year))
+
+
+def _run_with_live_logs(
+    fn, pdf_path: str, company: str, ticker: str, fiscal_year: int
+):
+    """
+    Run *fn* in a background thread, streaming its log output live into a
+    Streamlit container.  Returns the function's return value (or re-raises
+    any exception it threw).
+    """
+    log_queue: queue.Queue = queue.Queue()
+    result_box: list = []   # [value]  or  [None, exception]
+
+    # ── Custom handler on root + key pipeline loggers ────────────────────────
+    fmt = logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+                            datefmt="%H:%M:%S")
+    handler = _QueueHandler(log_queue)
+    handler.setFormatter(fmt)
+
+    target_loggers = [
+        logging.getLogger(),
+        logging.getLogger("ingest"),
+        logging.getLogger("pipeline"),
+        logging.getLogger("pipeline.ingestion.parser"),
+        logging.getLogger("pipeline.ingestion.structure"),
+        logging.getLogger("pipeline.ingestion.chunker"),
+        logging.getLogger("llm"),
+    ]
+    old_levels: list[tuple] = []
+    for lg in target_loggers:
+        old_levels.append((lg, lg.level, lg.propagate))
+        lg.addHandler(handler)
+        if lg.level == logging.NOTSET or lg.level > logging.DEBUG:
+            lg.setLevel(logging.DEBUG)
+        lg.propagate = False
+
+    def _worker():
+        try:
+            result_box.append(fn(pdf_path, company, ticker, fiscal_year))
+        except Exception as exc:
+            result_box.append(None)
+            result_box.append(exc)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    # ── Stream logs while thread is alive ────────────────────────────────────
+    log_lines: list[str] = []
+    log_placeholder = st.empty()
+
+    with st.spinner("Pipeline running — see live logs below…"):
+        while thread.is_alive():
+            try:
+                while True:
+                    log_lines.append(log_queue.get_nowait())
+            except queue.Empty:
+                pass
+            if log_lines:
+                log_placeholder.markdown(
+                    _render_log_lines(log_lines), unsafe_allow_html=True
+                )
+            time.sleep(0.15)
+
+    # drain any remaining messages
+    try:
+        while True:
+            log_lines.append(log_queue.get_nowait())
+    except queue.Empty:
+        pass
+    if log_lines:
+        log_placeholder.markdown(_render_log_lines(log_lines), unsafe_allow_html=True)
+
+    # ── Restore loggers ───────────────────────────────────────────────────────
+    for lg, old_level, old_propagate in old_levels:
+        lg.removeHandler(handler)
+        lg.setLevel(old_level)
+        lg.propagate = old_propagate
+
+    thread.join()
+
+    if len(result_box) == 2:   # exception path
+        raise result_box[1]
+    return result_box[0]
 
 
 # ── Colour helpers ───────────────────────────────────────────────────────────
@@ -187,17 +317,10 @@ def main():
             st.error("Company, ticker, and fiscal year are required.")
             st.stop()
 
+        fn = _pipeline_fast if fast_mode else _pipeline_full
         try:
-            if fast_mode:
-                parsed_doc, chunks, parse_time, chunk_time = _run_m1_m3(
-                    pdf_path, company, str(ticker), int(fiscal_year)
-                )
-                struct_time = None
-                structured_doc = None
-            else:
-                parsed_doc, structured_doc, chunks, parse_time, struct_time, chunk_time = _run_full(
-                    pdf_path, company, str(ticker), int(fiscal_year)
-                )
+            parsed_doc, structured_doc, chunks, parse_time, struct_time, chunk_time = \
+                _run_with_live_logs(fn, pdf_path, company, str(ticker), int(fiscal_year))
         except Exception as exc:
             st.error(f"Pipeline error: {exc}")
             st.exception(exc)
