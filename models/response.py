@@ -57,8 +57,6 @@ class PageData:
 @dataclass
 class ParsedDocument:
     pages: list[PageData] = field(default_factory=list)
-    font_profile: dict = field(default_factory=dict)
-    heading_level_map: dict = field(default_factory=dict)
     total_pages: int = 0
     file_path: str = ""
 

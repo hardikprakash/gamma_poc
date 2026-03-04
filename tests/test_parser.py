@@ -40,25 +40,6 @@ class TestTableToMarkdown:
         assert "| A | B | C |" in md
 
 
-class TestFontProfile:
-    """Basic smoke tests for font-related helpers."""
-
-    def test_heading_level_map_returns_dict(self):
-        from pipeline.ingestion.parser import _build_heading_level_map
-        profile = {"body": (10, "normal"), "all": {
-            (10, "normal"): 5000,
-            (14, "bold"): 200,
-            (12, "bold"): 300,
-            (10, "bold"): 100,
-        }}
-        result = _build_heading_level_map(profile)
-        assert isinstance(result, dict)
-        # 14pt bold → level 1, 12pt bold → level 2, 10pt bold → level 3
-        assert result[(14, "bold")] == 1
-        assert result[(12, "bold")] == 2
-        assert result[(10, "bold")] == 3
-
-
 class TestMarkdownTableValidation:
     """Test _validate_markdown_table."""
 

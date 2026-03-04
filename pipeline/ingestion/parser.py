@@ -1,16 +1,17 @@
 """
 M1: Parser — PDF → ParsedDocument.
 
-No LLM calls. Primary extraction via pymupdf4llm (markdown-native).
-Uses fitz for font profile metadata. Falls back to pdfplumber for
-tables that fail markdown validation (merged cells, multi-row headers,
-page-spanning tables).
+No LLM calls.
+  • pdfplumber — PRIMARY table extraction (structured headers/rows/markdown).
+  • pymupdf4llm — prose & heading extraction (markdown per page).
+
+Table regions are stripped from the pymupdf4llm markdown so table text
+never bleeds into prose TextBlocks.
 """
 
 from __future__ import annotations
 import logging
 import re
-import fitz  # PyMuPDF — font profiling
 import pymupdf4llm
 import pdfplumber
 
@@ -30,12 +31,14 @@ def parse_pdf(pdf_path: str) -> ParsedDocument:
     """
     Returns ParsedDocument:
       .pages: list[PageData]   — text blocks + tables per page
-      .font_profile: dict      — (font_size, weight) → frequency count across doc
-      .heading_level_map: dict — (font_size, weight) → heading level 1-4
-    Primary path: pymupdf4llm markdown output (page_chunks=True).
-    Fallback: pdfplumber for tables that fail markdown validation.
+
+    Flow per page:
+      1. pdfplumber extracts every table → TableData objects.
+      2. pymupdf4llm gives the full-page markdown.
+      3. All pipe-delimited table blocks are stripped from the markdown.
+      4. Remaining markdown is parsed into heading & prose TextBlocks.
     """
-    # ── 1. pymupdf4llm: page-chunked markdown ───────────────────────────────
+    # ── 1. pymupdf4llm: page-chunked markdown (prose + headings) ────────────
     page_chunks = pymupdf4llm.to_markdown(
         pdf_path,
         page_chunks=True,
@@ -44,80 +47,80 @@ def parse_pdf(pdf_path: str) -> ParsedDocument:
     )
     total_pages = len(page_chunks)
 
-    # ── 2. fitz: font profile for heading-level metadata ────────────────────
-    fitz_doc = fitz.open(pdf_path)
-    font_profile = _build_font_profile(fitz_doc)
-    heading_level_map = _build_heading_level_map(font_profile)
-    fitz_doc.close()
-
-    # ── 3. pdfplumber: opened lazily only when a table fails validation ─────
-    plumber_doc = None
-    fallback_count = 0
+    # ── 2. pdfplumber: PRIMARY table extraction ─────────────────────────────
+    plumber_doc = pdfplumber.open(pdf_path)
+    plumber_table_count = 0
 
     pages: list[PageData] = []
     for page_idx, chunk in enumerate(page_chunks):
         md_text: str = chunk.get("text", "")
 
-        # Parse markdown into text blocks and table candidates
-        text_blocks, md_tables = _parse_markdown_page(md_text, page_idx)
+        # 3a. Extract tables from pdfplumber (primary source of truth)
+        plumber_tables: list[TableData] = []
+        if page_idx < len(plumber_doc.pages):
+            plumber_tables = _extract_tables_pdfplumber(
+                plumber_doc.pages[page_idx], page_idx,
+            )
+            plumber_table_count += len(plumber_tables)
 
-        # Validate each table; fall back to pdfplumber on failure
-        validated_tables: list[TableData] = []
-        needs_fallback = False
-        for tbl in md_tables:
-            if _validate_markdown_table(tbl.markdown):
-                validated_tables.append(tbl)
-            else:
-                needs_fallback = True
-                logger.debug(
-                    f"Page {page_idx}: table {tbl.table_id} failed validation, "
-                    "queuing pdfplumber fallback"
-                )
+        # 3b. Strip all pipe-delimited table blocks from markdown
+        clean_md = _strip_table_blocks(md_text)
 
-        if needs_fallback:
-            if plumber_doc is None:
-                plumber_doc = pdfplumber.open(pdf_path)
-            if page_idx < len(plumber_doc.pages):
-                fb_tables = _extract_tables_pdfplumber(
-                    plumber_doc.pages[page_idx], page_idx,
-                    start_idx=len(validated_tables),
-                )
-                validated_tables.extend(fb_tables)
-                fallback_count += 1
+        # 3c. Parse remaining markdown for headings & prose
+        text_blocks, _ = _parse_markdown_page(clean_md, page_idx)
 
-        raw_text = _strip_markdown_formatting(md_text)
+        raw_text = _strip_markdown_formatting(clean_md)
 
         pages.append(PageData(
             page_idx=page_idx,
             text_blocks=text_blocks,
-            tables=validated_tables,
+            tables=plumber_tables,
             raw_text=raw_text,
         ))
 
-    if plumber_doc is not None:
-        plumber_doc.close()
+    plumber_doc.close()
 
     logger.info(
         f"Parsed {pdf_path}: {total_pages} pages, "
-        f"body font={font_profile.get('body')}, "
-        f"{len(heading_level_map)} heading levels, "
-        f"{fallback_count} pages needed pdfplumber table fallback"
+        f"{plumber_table_count} tables extracted via pdfplumber"
     )
 
     return ParsedDocument(
         pages=pages,
-        font_profile=font_profile,
-        heading_level_map=heading_level_map,
         total_pages=total_pages,
         file_path=pdf_path,
     )
 
 
+# ── Table Block Stripping ────────────────────────────────────────────────────
+
+_TABLE_ROW_RE = re.compile(r"^\|.*\|$")
+_TABLE_SEP_RE = re.compile(r"^\|[\s:|\-]*-[\s:|\-]*\|$")
+
+
+def _strip_table_blocks(md_text: str) -> str:
+    """Remove all contiguous pipe-delimited table blocks from markdown.
+
+    This prevents table content from leaking into prose TextBlocks when
+    tables are extracted separately via pdfplumber.
+    """
+    out_lines: list[str] = []
+    lines = md_text.split("\n")
+    i = 0
+    while i < len(lines):
+        if _TABLE_ROW_RE.match(lines[i].strip()):
+            # Skip entire contiguous table block
+            while i < len(lines) and _TABLE_ROW_RE.match(lines[i].strip()):
+                i += 1
+        else:
+            out_lines.append(lines[i])
+            i += 1
+    return "\n".join(out_lines)
+
+
 # ── Markdown Page Parsing ───────────────────────────────────────────────────
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)")
-_TABLE_ROW_RE = re.compile(r"^\|.*\|$")
-_TABLE_SEP_RE = re.compile(r"^\|[\s:|\-]*-[\s:|\-]*\|$")
 
 
 def _parse_markdown_page(
@@ -284,27 +287,63 @@ def _validate_markdown_table(markdown: str) -> bool:
     return True
 
 
-# ── pdfplumber Table Fallback ───────────────────────────────────────────────
+# ── pdfplumber Table Extraction (PRIMARY) ────────────────────────────────────
 
 def _extract_tables_pdfplumber(
-    plumber_page, page_idx: int, start_idx: int = 0
+    plumber_page, page_idx: int, start_idx: int = 0,
 ) -> list[TableData]:
-    """Extract tables from a pdfplumber page — used only when pymupdf4llm tables fail validation."""
+    """Extract tables from a pdfplumber page.
+
+    This is the primary table extraction path.  pdfplumber uses line-
+    intersection geometry for bordered tables and a text-alignment
+    heuristic for borderless ones — both produce clean headers/rows
+    without the rendering artefacts that plague markdown-parsed tables.
+    """
     tables: list[TableData] = []
     try:
-        raw_tables = plumber_page.extract_tables()
+        raw_tables = plumber_page.extract_tables(
+            table_settings={
+                "vertical_strategy": "lines_strict",
+                "horizontal_strategy": "lines_strict",
+            }
+        )
+        # If strict mode finds nothing, fall back to default detection
+        if not raw_tables:
+            raw_tables = plumber_page.extract_tables()
     except Exception as e:
-        logger.debug(f"pdfplumber fallback failed on page {page_idx}: {e}")
+        logger.debug(f"pdfplumber extraction failed on page {page_idx}: {e}")
         return tables
 
     for t_idx, raw_table in enumerate(raw_tables):
         if not raw_table or len(raw_table) < 2:
             continue
 
-        headers = [str(cell).strip() if cell else "" for cell in raw_table[0]]
-        rows = []
+        # Clean cells: None → "", strip whitespace, collapse internal newlines
+        def _clean(cell) -> str:
+            if cell is None:
+                return ""
+            return " ".join(str(cell).split()).strip()
+
+        headers = [_clean(cell) for cell in raw_table[0]]
+
+        # Skip tables where every header is empty (artefact)
+        if all(h == "" for h in headers):
+            # Try using second row as headers if it has content
+            if len(raw_table) > 2 and any(_clean(c) for c in raw_table[1]):
+                headers = [_clean(c) for c in raw_table[1]]
+                raw_table = [raw_table[0]] + raw_table[2:]  # drop old empty header
+            else:
+                continue
+
+        rows: list[list[str]] = []
         for row in raw_table[1:]:
-            rows.append([str(cell).strip() if cell else "" for cell in row])
+            cleaned_row = [_clean(cell) for cell in row]
+            # Skip entirely empty rows
+            if any(c for c in cleaned_row):
+                rows.append(cleaned_row)
+
+        if not rows:
+            continue
 
         markdown = _table_to_markdown(headers, rows)
         table_id = f"p{page_idx}_t{start_idx + t_idx}"
@@ -332,51 +371,6 @@ def _table_to_markdown(headers: list[str], rows: list[list[str]]) -> str:
         lines.append("| " + " | ".join(padded[:len(headers)]) + " |")
 
     return "\n".join(lines)
-
-
-# ── Font Profile (DOC3 §2.8) ────────────────────────────────────────────────
-
-def _build_font_profile(fitz_doc) -> dict:
-    """
-    Count (font_size_rounded, weight) frequencies across all spans.
-    The most frequent profile is 'body'.
-    """
-    font_counts: dict[tuple, int] = {}
-    for page in fitz_doc:
-        blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
-        for block in blocks:
-            if block.get("type") != 0:
-                continue
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    text = span.get("text", "").strip()
-                    if not text:
-                        continue
-                    size = round(span["size"])
-                    weight = "bold" if span["flags"] & 16 else "normal"
-                    key = (size, weight)
-                    font_counts[key] = font_counts.get(key, 0) + len(text)
-
-    if not font_counts:
-        return {"body": (10, "normal"), "all": {}}
-
-    body_profile = max(font_counts, key=font_counts.get)
-    return {"body": body_profile, "all": font_counts}
-
-
-def _build_heading_level_map(font_profile: dict) -> dict:
-    """
-    Map (font_size, weight) tuples to heading levels 1-4.
-    Headings are profiles larger than body font, or same-size bold.
-    """
-    body_size = font_profile["body"][0]
-    candidates = [
-        (size, weight)
-        for (size, weight) in font_profile.get("all", {})
-        if size > body_size or (size == body_size and weight == "bold")
-    ]
-    candidates.sort(key=lambda x: (x[0], x[1] == "bold"), reverse=True)
-    return {profile: level + 1 for level, profile in enumerate(candidates[:4])}
 
 
 # ── Utility ─────────────────────────────────────────────────────────────────
