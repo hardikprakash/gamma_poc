@@ -156,6 +156,7 @@ Return a JSON object with a "sections" key containing an array, one object per h
 
 _TABLE_BATCH_SIZE = 15   # tables per LLM call
 _TABLE_BATCH_CONCURRENCY = 4  # max simultaneous classification requests to OpenRouter
+_TABLE_MD_PREVIEW = 600  # chars of markdown kept per table; headers + ~3 rows is enough to classify
 
 
 async def _classify_tables(tables: list[dict]) -> dict[str, TableClassification]:
@@ -174,9 +175,7 @@ async def _classify_tables(tables: list[dict]) -> dict[str, TableClassification]
     class TablesWrapper(BaseModel):
         tables: list[TableClassItem] = Field(default_factory=list)
 
-    # Max chars of markdown kept per table in the classification prompt.
-    # Headers + first ~3 rows is always enough to identify the table type.
-    _TABLE_MD_PREVIEW = 600
+    sem = _asyncio.Semaphore(_TABLE_BATCH_CONCURRENCY)
 
     async def _classify_batch(batch: list[dict]) -> dict[str, TableClassification]:
         def _preview(md: str) -> str:
@@ -208,21 +207,17 @@ Return a JSON object with a "tables" key containing an array, one object per tab
     }}
   ]
 }}"""
-        batch_results: dict[str, TableClassification] = {}
-        try:
+        async with sem:
             wrapper = await validated_llm_call(prompt, TablesWrapper, system=_TABLE_CLASS_SYSTEM)
-            for item in wrapper.tables:
-                batch_results[item.table_id] = TableClassification(
-                    table_type=item.table_type,
-                    contains_financial_facts=item.contains_financial_facts,
-                    primary_metric=item.primary_metric,
-                    time_periods=item.time_periods,
-                    confidence=item.confidence,
-                )
-        except Exception as e:
-            logger.warning(f"Table classification failed for batch (ids={[t['table_id'] for t in batch]}), defaulting: {e!r}")
-            for t in batch:
-                batch_results[t["table_id"]] = TableClassification()
+        batch_results: dict[str, TableClassification] = {}
+        for item in wrapper.tables:
+            batch_results[item.table_id] = TableClassification(
+                table_type=item.table_type,
+                contains_financial_facts=item.contains_financial_facts,
+                primary_metric=item.primary_metric,
+                time_periods=item.time_periods,
+                confidence=item.confidence,
+            )
         return batch_results
 
     batches = [tables[i: i + _TABLE_BATCH_SIZE] for i in range(0, len(tables), _TABLE_BATCH_SIZE)]
