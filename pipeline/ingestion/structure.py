@@ -154,17 +154,13 @@ Return a JSON object with a "sections" key containing an array, one object per h
 
 # ── Step 3: Table Classification (batched) ──────────────────────────────────
 
+_TABLE_BATCH_SIZE = 15   # tables per LLM call
+_TABLE_BATCH_CONCURRENCY = 4  # max simultaneous classification requests to OpenRouter
+
+
 async def _classify_tables(tables: list[dict]) -> dict[str, TableClassification]:
-    """Classify all tables in a single LLM call (batched)."""
-    results: dict[str, TableClassification] = {}
-
-    # Batch all tables into one call for efficiency
-    tables_json_parts = []
-    for t in tables:
-        tables_json_parts.append(f"Table ID: {t['table_id']}\n{t['markdown']}\n")
-
-    combined = "\n---\n".join(tables_json_parts)
-
+    """Classify all tables by splitting into batches, running up to _TABLE_BATCH_CONCURRENCY at a time."""
+    import asyncio as _asyncio
     from pydantic import BaseModel, Field
 
     class TableClassItem(BaseModel):
@@ -178,7 +174,24 @@ async def _classify_tables(tables: list[dict]) -> dict[str, TableClassification]
     class TablesWrapper(BaseModel):
         tables: list[TableClassItem] = Field(default_factory=list)
 
-    prompt = f"""Classify these tables from a financial document.
+    # Max chars of markdown kept per table in the classification prompt.
+    # Headers + first ~3 rows is always enough to identify the table type.
+    _TABLE_MD_PREVIEW = 600
+
+    async def _classify_batch(batch: list[dict]) -> dict[str, TableClassification]:
+        def _preview(md: str) -> str:
+            if len(md) <= _TABLE_MD_PREVIEW:
+                return md
+            return md[:_TABLE_MD_PREVIEW] + f"\n... ({len(md) - _TABLE_MD_PREVIEW} chars truncated for classification)"
+
+        combined = "\n---\n".join(
+            f"Table ID: {t['table_id']}\n{_preview(t['markdown'])}\n" for t in batch
+        )
+        logger.info(
+            f"Table classification batch: {len(batch)} tables, "
+            f"ids={[t['table_id'] for t in batch]}, prompt_chars={len(combined)}"
+        )
+        prompt = f"""Classify these tables from a financial document.
 
 {combined}
 
@@ -195,22 +208,31 @@ Return a JSON object with a "tables" key containing an array, one object per tab
     }}
   ]
 }}"""
+        batch_results: dict[str, TableClassification] = {}
+        try:
+            wrapper = await validated_llm_call(prompt, TablesWrapper, system=_TABLE_CLASS_SYSTEM)
+            for item in wrapper.tables:
+                batch_results[item.table_id] = TableClassification(
+                    table_type=item.table_type,
+                    contains_financial_facts=item.contains_financial_facts,
+                    primary_metric=item.primary_metric,
+                    time_periods=item.time_periods,
+                    confidence=item.confidence,
+                )
+        except Exception as e:
+            logger.warning(f"Table classification failed for batch (ids={[t['table_id'] for t in batch]}), defaulting: {e!r}")
+            for t in batch:
+                batch_results[t["table_id"]] = TableClassification()
+        return batch_results
 
-    try:
-        wrapper = await validated_llm_call(prompt, TablesWrapper, system=_TABLE_CLASS_SYSTEM)
-        for item in wrapper.tables:
-            results[item.table_id] = TableClassification(
-                table_type=item.table_type,
-                contains_financial_facts=item.contains_financial_facts,
-                primary_metric=item.primary_metric,
-                time_periods=item.time_periods,
-                confidence=item.confidence,
-            )
-    except Exception as e:
-        logger.warning(f"Table classification failed, defaulting: {e}")
-        for t in tables:
-            results[t["table_id"]] = TableClassification()
+    batches = [tables[i: i + _TABLE_BATCH_SIZE] for i in range(0, len(tables), _TABLE_BATCH_SIZE)]
+    logger.info(f"Classifying {len(tables)} tables in {len(batches)} batch(es) of ≤{_TABLE_BATCH_SIZE} (markdown previewed to {_TABLE_MD_PREVIEW} chars/table)")
 
+    batch_results_list = await _asyncio.gather(*(_classify_batch(b) for b in batches))
+
+    results: dict[str, TableClassification] = {}
+    for br in batch_results_list:
+        results.update(br)
     return results
 
 
